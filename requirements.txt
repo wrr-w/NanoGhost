@@ -1,0 +1,5 @@
+json5>=0.9
+openai>=1.0
+requests>=2.0
+python-dotenv>=1.0
+lark-oapi>=1.6.0
