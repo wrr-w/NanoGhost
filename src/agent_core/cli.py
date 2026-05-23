@@ -288,6 +288,21 @@ def _cmd_instance_list(_args) -> int:
     return 0
 
 
+def _cmd_instance_delete(args) -> int:
+    root = _instances_root()
+    name = str(args.name).strip()
+    if not name:
+        raise SystemExit("instance name is required")
+    inst = (root / name).resolve()
+    if not inst.exists():
+        print(json.dumps({"ok": False, "name": name, "path": str(inst), "error": "not found"}, ensure_ascii=False))
+        return 1
+    import shutil
+    shutil.rmtree(inst)
+    print(json.dumps({"ok": True, "name": name, "path": str(inst)}, ensure_ascii=False))
+    return 0
+
+
 def _cmd_instance_create(args) -> int:
     root = _instances_root()
     name = str(args.name).strip()
@@ -418,6 +433,9 @@ def main(argv: list[str] | None = None) -> int:
     inst_create = inst_sub.add_parser("create", help="create a new instance with default layout")
     inst_create.add_argument("name", help="instance name (e.g. capture)")
     inst_create.set_defaults(func=_cmd_instance_create)
+    inst_delete = inst_sub.add_parser("delete", help="delete an instance (removes all data)")
+    inst_delete.add_argument("name", help="instance name (e.g. capture)")
+    inst_delete.set_defaults(func=_cmd_instance_delete)
     inst_list = inst_sub.add_parser("list", help="list all instances")
     inst_list.set_defaults(func=_cmd_instance_list)
     inst_path = inst_sub.add_parser("path", help="resolve instance name to absolute path")
