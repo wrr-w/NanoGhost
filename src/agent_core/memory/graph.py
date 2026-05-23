@@ -44,9 +44,9 @@ class EdgeStat:
         return asdict(self)
 
 
-def _load_edges(db: DatabasePort) -> Dict[Tuple[str, str, str, str], EdgeStat]:
+def _load_edges(db: DatabasePort, namespace: Optional[str] = None) -> Dict[Tuple[str, str, str, str], EdgeStat]:
     try:
-        rows = db.load_all_memory_edges()
+        rows = db.load_all_memory_edges(namespace=namespace)
         out: Dict[Tuple[str, str, str, str], EdgeStat] = {}
         for row in rows:
             edge = EdgeStat.from_dict(row)
@@ -155,11 +155,12 @@ def _detect_dependency(step_b: Dict[str, Any], step_a_num: int) -> bool:
 def update_graph_from_steps(
     steps: List[Dict[str, Any]], approved: bool,
     db: DatabasePort,
+    namespace: Optional[str] = None,
 ) -> None:
     if not steps or len(steps) < 2:
         return
 
-    edges = _load_edges(db)
+    edges = _load_edges(db, namespace=namespace)
     now = time.time()
     changed = False
 
@@ -181,6 +182,7 @@ def update_graph_from_steps(
                 total_count=0, approved_count=0,
                 created_at=now, updated_at=now,
             )
+            edge.to_dict()["namespace"] = namespace
             edges[key] = edge
         else:
             if relation == "DEPENDS_ON" and edge.relation_type == "FOLLOWS":
@@ -201,13 +203,14 @@ def suggest_next_nodes(
     top_k: int = 3,
     relation_filter: Optional[str] = None,
     db: Optional[DatabasePort] = None,
+    namespace: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     if db is None:
         from agent_core.agent import _get_default_db
         db = _get_default_db()
 
     method, path = _normalize_step(current_step)
-    edges = _load_edges(db)
+    edges = _load_edges(db, namespace=namespace)
     candidates: List[EdgeStat] = []
 
     for key, edge in edges.items():

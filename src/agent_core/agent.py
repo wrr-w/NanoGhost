@@ -1,10 +1,11 @@
 """
-Agent 主类：对象化、多实例、Skill 可插拔、SubAgent 可派生。
+Agent 主类：对象化、多实例、SubAgent 可派生。
 
 每个 Agent 实例拥有：
 - 独立的端口注入（db, llm, http, image_port）
 - 独立的 namespace（记忆隔离）
 - 独立的 SkillRegistry
+- 可插拔的 Hook 生命周期
 - 工具注册表（ToolRegistry，Hermes 风格 function calling）
 - 可创建 SubAgent（继承端口，独立 namespace）
 
@@ -30,7 +31,8 @@ from agent_core.engine.messages import build_agent_messages_with_history
 from agent_core.interfaces import DatabasePort, ImagePort, LLMPort, HttpPort, LLMResponse
 from agent_core.memory.cards import record_successful_flow
 from agent_core.memory.graph import update_graph_from_steps
-from agent_core.skill import SkillRegistry, Skill, SkillDefinition
+from agent_core.engine.hooks import AgentHooks
+from agent_core.skill import SkillRegistry, SkillDefinition
 from agent_core.tool import ToolRegistry, ToolCall, ToolResult, register_builtins
 
 logger = logging.getLogger("agent_core")
@@ -61,14 +63,16 @@ class Agent:
         auto_discover_skills: bool = True,
         skill_extra_dirs: Optional[List[str]] = None,
         auto_register_tools: bool = True,
+        hooks: Optional[AgentHooks] = None,
     ):
         self.db = db
         self.llm = llm
         self.http = http
         self.image_port = image_port
         self.namespace = namespace
+        self.hooks = hooks or AgentHooks()
 
-        # Skill 系统（兼容旧 ABC + 新 SKILL.md 生态）
+        # Skill 系统（SKILL.md 生态）
         self.skill_registry = SkillRegistry()
 
         # 自动发现 SKILL.md 技能
@@ -79,23 +83,31 @@ class Agent:
         self.tool_registry = ToolRegistry()
         if auto_register_tools:
             register_builtins(self.tool_registry)
+            try:
+                from agent_core.mcp import MCPManager
+                from agent_core.engine.config_loader import load_instance_config
+
+                inst_cfg = load_instance_config()
+                cooldown = inst_cfg.extra.get("mcp_cooldown_seconds", 60)
+                fail_threshold = inst_cfg.extra.get("mcp_fail_threshold", 3)
+                probe_ttl = inst_cfg.extra.get("mcp_probe_ttl_seconds", 60)
+
+                self._mcp_manager = MCPManager(
+                    cooldown_seconds=cooldown,
+                    fail_threshold=fail_threshold,
+                    probe_ttl_seconds=probe_ttl,
+                )
+                self._mcp_manager.attach_tool_registry(self.tool_registry)
+                import threading
+                threading.Thread(target=self._mcp_manager.refresh_all, daemon=True).start()
+                self._mcp_manager.start_poller()
+            except Exception:
+                self._mcp_manager = None
 
         # SubAgent 管理
         self._sub_agents: Dict[str, "Agent"] = {}
 
-    # ---- Skill 管理（旧 ABC 体系） ----
-
-    def register_skill(self, skill: Skill) -> None:
-        """注册一个 Python ABC Skill。"""
-        self.skill_registry.register(skill)
-
-    def unregister_skill(self, name: str) -> None:
-        self.skill_registry.unregister(name)
-
-    def list_skills(self) -> List[Skill]:
-        return self.skill_registry.list()
-
-    # ---- Skill 管理（新 SKILL.md 生态） ----
+    # ---- Skill 管理（SKILL.md 生态） ----
 
     def list_skill_defs(self) -> List["SkillDefinition"]:
         """列出所有发现的 SKILL.md 技能定义。"""
@@ -224,11 +236,10 @@ class Agent:
         )
 
         # ---- 注入 SKILL.md 技能索引（轻量列表，按需加载） ----
-        # 以 user message 形式注入（而非 system prompt），不破坏 prompt caching
         skill_block = self.skill_registry.build_skill_context()
         if skill_block:
-            messages.insert(1, {
-                "role": "user",
+            messages.append({
+                "role": "system",
                 "content": [{"type": "text", "text": skill_block}],
             })
 
@@ -279,8 +290,15 @@ class Agent:
             # ---- 调用 LLM（始终传递 tool schemas） ----
             tools_schemas = self.tool_registry.get_available_schemas()
             try:
+                modified = self.hooks.before_llm_call(messages, config)
+                if modified is not None:
+                    messages = modified
                 response = self.llm.chat(messages, temperature=0.1, tools=tools_schemas)
+                modified = self.hooks.after_llm_call(response, messages)
+                if modified is not None:
+                    response = modified
             except Exception as e:
+                self.hooks.on_error(e)
                 logger.error(f"Agent LLM chat error: {e}")
                 yield ("error", {"error": str(e)})
                 return
@@ -293,6 +311,9 @@ class Agent:
             if response.content and not response.has_tool_calls:
                 yield ("text_stream", {"content": response.content})
                 reply = response.content.strip() or "已完成。"
+                modified_reply = self.hooks.before_response(reply, all_steps_out)
+                if modified_reply is not None:
+                    reply = modified_reply
 
                 if session_id:
                     try:
@@ -307,7 +328,7 @@ class Agent:
                             user_message, all_steps_out, step_counter[0],
                             db=self.db, llm=self.llm, namespace=self.namespace,
                         )
-                        update_graph_from_steps(all_steps_out, approved=False, db=self.db)
+                        update_graph_from_steps(all_steps_out, approved=False, db=self.db, namespace=self.namespace)
                     except Exception as e:
                         logger.error(f"[AgentMemory] record error: {e}")
 
@@ -363,7 +384,16 @@ class Agent:
                             "id": tc.id,
                         })
 
-                    result = self.tool_registry.dispatch(tc.name, tc.arguments, tool_context)
+                    hook_args = self.hooks.before_tool_dispatch(tc.name, tc.arguments, tool_context)
+                    if hook_args is False:
+                        result = ToolResult(ok=False, error=f"工具 [{tc.name}] 被 hook 拦截", signal="__continue__")
+                    else:
+                        tc_args = hook_args if hook_args is not None else tc.arguments
+                        result = self.tool_registry.dispatch(tc.name, tc_args, tool_context)
+
+                    modified_result = self.hooks.after_tool_dispatch(tc.name, result, tool_context)
+                    if modified_result is not None:
+                        result = modified_result
 
                     for ev in _pending_events:
                         yield ev

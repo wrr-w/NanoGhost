@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -19,7 +20,40 @@ import requests
 
 logger = logging.getLogger("agent_core")
 
-_TOKEN_CACHE: Dict[str, Any] = {"token": None, "expire_at": 0.0}
+
+class FeishuTokenManager:
+    """飞书 tenant_access_token 多实例缓存管理器。"""
+
+    def __init__(self):
+        self._token: Optional[str] = None
+        self._expire_at: float = 0.0
+        self._lock = threading.Lock()
+
+    def get(self, app_id: str, app_secret: str, force_refresh: bool = False) -> Optional[str]:
+        if not force_refresh:
+            with self._lock:
+                if self._token and self._expire_at - 60 > time.time():
+                    return self._token
+
+        url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+        try:
+            resp = requests.post(url, json={"app_id": app_id, "app_secret": app_secret}, timeout=10)
+            data = resp.json()
+            if data.get("code") == 0:
+                with self._lock:
+                    self._token = data["tenant_access_token"]
+                    self._expire_at = time.time() + float(data.get("expire", 7200))
+                return self._token
+            logger.error(f"[Feishu] token 换取失败: {data}")
+            return None
+        except Exception as e:
+            logger.error(f"[Feishu] token 请求异常: {e}")
+            return None
+
+    def clear(self) -> None:
+        with self._lock:
+            self._token = None
+            self._expire_at = 0.0
 
 
 def _now() -> float:
@@ -33,30 +67,10 @@ def _get_app_credentials() -> Tuple[str, str]:
 
 
 def get_tenant_access_token(force_refresh: bool = False) -> Optional[str]:
-    if not force_refresh:
-        token = _TOKEN_CACHE.get("token")
-        expire_at = float(_TOKEN_CACHE.get("expire_at") or 0)
-        if token and expire_at - 60 > _now():
-            return token
+    return _shared_token_manager.get(*_get_app_credentials(), force_refresh=force_refresh)
 
-    app_id, app_secret = _get_app_credentials()
-    if not app_id or not app_secret:
-        logger.warning("[Feishu] FEISHU_APP_ID/FEISHU_APP_SECRET 未配置")
-        return None
 
-    url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
-    try:
-        resp = requests.post(url, json={"app_id": app_id, "app_secret": app_secret}, timeout=10)
-        data = resp.json()
-        if data.get("code") == 0:
-            _TOKEN_CACHE["token"] = data["tenant_access_token"]
-            _TOKEN_CACHE["expire_at"] = _now() + float(data.get("expire", 7200))
-            return data["tenant_access_token"]
-        logger.error(f"[Feishu] token 换取失败: {data}")
-        return None
-    except Exception as e:
-        logger.error(f"[Feishu] token 请求异常: {e}")
-        return None
+_shared_token_manager = FeishuTokenManager()
 
 
 def _feishu_request(method: str, path: str, body: Optional[Dict] = None) -> Optional[Dict]:

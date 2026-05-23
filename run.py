@@ -20,26 +20,66 @@ import asyncio
 import json
 import logging
 import os
-import sqlite3
 import sys
 import threading
 import time
-import uuid
-from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
-# 确保能找到 src/agent_core/
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SRC = os.path.join(_HERE, "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-import requests as http_requests
-
 from dotenv import load_dotenv
-from openai import OpenAI
 
-load_dotenv()
+def _clean_env_value(v: str) -> str:
+    if v is None:
+        return ""
+    s = str(v).strip()
+    if len(s) >= 2 and ((s[0] == s[-1] == "`") or (s[0] == s[-1] == '"') or (s[0] == s[-1] == "'")):
+        s = s[1:-1].strip()
+    return s
+
+
+def _preparse_instance_dir(argv: List[str]) -> str:
+    inst = os.getenv("INSTANCE_DIR")
+    if inst:
+        return inst
+    for i, a in enumerate(argv or []):
+        if a in ("--instance-dir", "-I") and i + 1 < len(argv):
+            return argv[i + 1]
+        if a.startswith("--instance-dir="):
+            return a.split("=", 1)[1]
+    return ""
+
+
+def _bootstrap_instance(argv: List[str]) -> None:
+    instance_dir = _clean_env_value(_preparse_instance_dir(argv))
+    if not instance_dir:
+        load_dotenv()
+        return
+
+    instance_dir = os.path.abspath(os.path.expanduser(instance_dir))
+    os.environ["INSTANCE_DIR"] = instance_dir
+
+    os.makedirs(os.path.join(instance_dir, "data"), exist_ok=True)
+    os.makedirs(os.path.join(instance_dir, "work"), exist_ok=True)
+    os.makedirs(os.path.join(instance_dir, "skills"), exist_ok=True)
+
+    os.environ.setdefault("AGENT_DB_PATH", os.path.join(instance_dir, "data", "agent_data.db"))
+    os.environ.setdefault("AGENT_PROMPTS_DIR", os.path.join(instance_dir, "prompts"))
+    os.environ.setdefault("AGENT_WORKDIR", os.path.join(instance_dir, "work"))
+    os.environ.setdefault("AGENTS_SKILLS_DIR", os.path.join(instance_dir, "skills"))
+    os.environ.setdefault("AGENT_NAMESPACE", os.path.basename(instance_dir.rstrip("\\/")) or "agent")
+
+    dotenv_path = os.path.join(instance_dir, ".env")
+    if os.path.isfile(dotenv_path):
+        load_dotenv(dotenv_path=dotenv_path)
+    else:
+        load_dotenv()
+
+
+_bootstrap_instance(sys.argv)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -49,325 +89,10 @@ logging.getLogger("openai").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("agent_core")
 
-# ---------------------------------------------------------------------------
-# 适配器实现
-# ---------------------------------------------------------------------------
-
+# 适配器已提取至 agent_core.adapters
 from agent_core import Agent, AgentConfig
-from agent_core.interfaces import DatabasePort, LLMPort, HttpPort, ImagePort, LLMResponse
+from agent_core.adapters import SqliteDatabase, OpenAILLM, RequestsHttp, SqliteImagePort
 from agent_core.tool import ToolCall
-
-
-class SqliteDatabase(DatabasePort):
-    """SQLite 实现的 DatabasePort。"""
-
-    def __init__(self, db_path: str = ""):
-        self.db_path = db_path or os.path.join(os.path.dirname(__file__), "agent_data.db")
-        self._init_db()
-
-    @contextmanager
-    def _conn(self):
-        conn = sqlite3.connect(self.db_path, timeout=30)
-        conn.row_factory = sqlite3.Row
-        try:
-            yield conn
-        finally:
-            conn.close()
-
-    def _init_db(self):
-        with self._conn() as conn:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS agent_sessions (
-                    id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '新对话',
-                    created_at REAL NOT NULL, updated_at REAL NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS agent_messages (
-                    id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
-                    role TEXT NOT NULL, type TEXT, content TEXT NOT NULL,
-                    steps_json TEXT, created_at REAL NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS agent_images (
-                    id TEXT PRIMARY KEY, base64 TEXT NOT NULL,
-                    ref_count INTEGER DEFAULT 1, created_at REAL NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS agent_memory_cards (
-                    id TEXT PRIMARY KEY, flow_hash TEXT,
-                    intent_summary TEXT, intent_examples_json TEXT,
-                    intent_vector_json TEXT, flow_signature_json TEXT,
-                    steps_json TEXT, success_count INTEGER DEFAULT 0,
-                    total_rounds INTEGER DEFAULT 0,
-                    approved_count INTEGER DEFAULT 0,
-                    rejected_count INTEGER DEFAULT 0,
-                    trigger_count INTEGER DEFAULT 0,
-                    scene_tag TEXT, namespace TEXT,
-                    created_at REAL NOT NULL, updated_at REAL NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS agent_memory_edges (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    from_method TEXT NOT NULL, from_path TEXT NOT NULL,
-                    to_method TEXT NOT NULL, to_path TEXT NOT NULL,
-                    relation_type TEXT DEFAULT 'FOLLOWS',
-                    total_count INTEGER DEFAULT 0,
-                    approved_count INTEGER DEFAULT 0,
-                    created_at REAL NOT NULL, updated_at REAL NOT NULL,
-                    UNIQUE(from_method, from_path, to_method, to_path)
-                );
-                CREATE INDEX IF NOT EXISTS idx_agent_messages_session
-                    ON agent_messages(session_id);
-            """)
-            conn.commit()
-
-    # ---- 会话 ----
-    def create_agent_session(self, title="新对话") -> str:
-        sid = str(uuid.uuid4())
-        now = time.time()
-        with self._conn() as conn:
-            conn.execute("INSERT INTO agent_sessions (id,title,created_at,updated_at) VALUES (?,?,?,?)",
-                         (sid, title[:200], now, now))
-            conn.commit()
-        return sid
-
-    def get_agent_session(self, session_id):
-        with self._conn() as conn:
-            row = conn.execute("SELECT * FROM agent_sessions WHERE id=?", (session_id,)).fetchone()
-            return dict(row) if row else None
-
-    def update_agent_session_title(self, session_id, title):
-        with self._conn() as conn:
-            conn.execute("UPDATE agent_sessions SET title=?, updated_at=? WHERE id=?",
-                         (title[:200], time.time(), session_id))
-            conn.commit()
-
-    def list_agent_sessions(self, limit=50):
-        with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT id, title, created_at, updated_at FROM agent_sessions ORDER BY updated_at DESC LIMIT ?",
-                (max(1, min(limit, 200)),),
-            ).fetchall()
-            return [dict(r) for r in rows]
-
-    def delete_agent_session(self, session_id):
-        with self._conn() as conn:
-            conn.execute("DELETE FROM agent_messages WHERE session_id=?", (session_id,))
-            cur = conn.execute("DELETE FROM agent_sessions WHERE id=?", (session_id,))
-            conn.commit()
-            return cur.rowcount > 0
-
-    # ---- 消息 ----
-    def add_agent_message(self, session_id, role, content, type="text", steps_json=None):
-        mid = str(uuid.uuid4())
-        now = time.time()
-        with self._conn() as conn:
-            conn.execute(
-                "INSERT INTO agent_messages (id,session_id,role,type,content,steps_json,created_at) VALUES (?,?,?,?,?,?,?)",
-                (mid, session_id, role, type, content, steps_json, now),
-            )
-            conn.execute("UPDATE agent_sessions SET updated_at=? WHERE id=?", (now, session_id))
-            conn.commit()
-        return mid
-
-    def get_agent_messages(self, session_id):
-        with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT id, role, type, content, steps_json, created_at FROM agent_messages WHERE session_id=? ORDER BY created_at ASC",
-                (session_id,),
-            ).fetchall()
-            return [dict(r) for r in rows]
-
-    def get_agent_images_batch(self, image_ids):
-        if not image_ids:
-            return []
-        with self._conn() as conn:
-            placeholders = ", ".join("?" * len(image_ids))
-            rows = conn.execute(
-                f"SELECT id, base64, created_at FROM agent_images WHERE id IN ({placeholders})",
-                image_ids,
-            ).fetchall()
-            return [dict(r) for r in rows]
-
-    # ---- 记忆卡片 ----
-    def load_all_memory_cards(self, namespace=None):
-        with self._conn() as conn:
-            if namespace:
-                rows = conn.execute(
-                    "SELECT * FROM agent_memory_cards WHERE namespace=? ORDER BY updated_at DESC",
-                    (namespace,),
-                ).fetchall()
-            else:
-                rows = conn.execute("SELECT * FROM agent_memory_cards ORDER BY updated_at DESC").fetchall()
-            cards = []
-            for row in rows:
-                r = dict(row)
-                for key, col in [("intent_examples", "intent_examples_json"), ("intent_vector", "intent_vector_json"),
-                                  ("flow_signature", "flow_signature_json"), ("steps", "steps_json")]:
-                    try:
-                        r[key] = json.loads(r.pop(col, "[]"))
-                    except Exception:
-                        r[key] = []
-                cards.append(r)
-            return cards
-
-    def save_memory_card(self, card):
-        with self._conn() as conn:
-            conn.execute("""
-                INSERT INTO agent_memory_cards (id, flow_hash, intent_summary, intent_examples_json,
-                    intent_vector_json, flow_signature_json, steps_json,
-                    success_count, total_rounds, approved_count, rejected_count,
-                    trigger_count, scene_tag, namespace, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    intent_summary=excluded.intent_summary,
-                    intent_examples_json=excluded.intent_examples_json,
-                    intent_vector_json=excluded.intent_vector_json,
-                    flow_signature_json=excluded.flow_signature_json,
-                    steps_json=excluded.steps_json,
-                    success_count=excluded.success_count,
-                    total_rounds=excluded.total_rounds,
-                    approved_count=excluded.approved_count,
-                    rejected_count=excluded.rejected_count,
-                    trigger_count=excluded.trigger_count,
-                    namespace=excluded.namespace,
-                    updated_at=excluded.updated_at
-            """, (
-                card.get("id"), card.get("flow_hash"), card.get("intent_summary"),
-                json.dumps(card.get("intent_examples") or [], ensure_ascii=False),
-                json.dumps(card.get("intent_vector") or [], ensure_ascii=False),
-                json.dumps(card.get("flow_signature") or {}, ensure_ascii=False),
-                json.dumps(card.get("steps") or [], ensure_ascii=False),
-                int(card.get("success_count") or 0), int(card.get("total_rounds") or 0),
-                int(card.get("approved_count") or 0), int(card.get("rejected_count") or 0),
-                int(card.get("trigger_count") or 0), card.get("scene_tag"),
-                card.get("namespace"), float(card.get("created_at") or 0), float(card.get("updated_at") or 0),
-            ))
-            conn.commit()
-
-    def delete_memory_card(self, card_id):
-        with self._conn() as conn:
-            cur = conn.execute("DELETE FROM agent_memory_cards WHERE id=?", (card_id,))
-            conn.commit()
-            return cur.rowcount > 0
-
-    # ---- 流程图边 ----
-    def load_all_memory_edges(self):
-        with self._conn() as conn:
-            rows = conn.execute("SELECT * FROM agent_memory_edges").fetchall()
-            return [dict(r) for r in rows]
-
-    def save_memory_edge(self, edge):
-        with self._conn() as conn:
-            conn.execute("""
-                INSERT INTO agent_memory_edges (from_method, from_path, to_method, to_path,
-                    relation_type, total_count, approved_count, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(from_method, from_path, to_method, to_path) DO UPDATE SET
-                    relation_type=excluded.relation_type, total_count=excluded.total_count,
-                    approved_count=excluded.approved_count, updated_at=excluded.updated_at
-            """, (
-                edge.get("from_method"), edge.get("from_path"),
-                edge.get("to_method"), edge.get("to_path"),
-                edge.get("relation_type") or "FOLLOWS",
-                int(edge.get("total_count") or 0), int(edge.get("approved_count") or 0),
-                float(edge.get("created_at") or 0), float(edge.get("updated_at") or 0),
-            ))
-            conn.commit()
-
-
-class OpenAILLM(LLMPort):
-    """OpenAI 兼容 API 实现的 LLMPort。"""
-
-    def __init__(self):
-        self.client = OpenAI(
-            api_key=os.getenv("OPENAI_API_KEY") or os.getenv("API_KEY"),
-            base_url=os.getenv("OPENAI_BASE_URL") or os.getenv("BASE_URL"),
-        )
-        self.model = os.getenv("OPENAI_MODEL") or os.getenv("MODEL_NAME") or "gpt-4o"
-        self.embed_model = os.getenv("EMBED_MODEL") or "text-embedding-3-small"
-
-    def stream_chat(self, messages, temperature=0.1) -> Iterator[str]:
-        stream = self.client.chat.completions.create(
-            model=self.model, messages=messages,
-            temperature=temperature, stream=True,
-        )
-        for chunk in stream:
-            delta = chunk.choices[0].delta if chunk.choices else None
-            if delta and delta.content:
-                yield delta.content
-
-    def chat(self, messages, temperature=0.1, tools=None):
-        kwargs = dict(model=self.model, messages=messages, temperature=temperature)
-        if tools:
-            kwargs["tools"] = tools
-        response = self.client.chat.completions.create(**kwargs)
-        msg = response.choices[0].message
-
-        tool_calls = None
-        if msg.tool_calls:
-            tool_calls = [ToolCall.from_openai(tc) for tc in msg.tool_calls]
-
-        return LLMResponse(content=msg.content, tool_calls=tool_calls)
-
-    def embed(self, text) -> List[float]:
-        resp = self.client.embeddings.create(model=self.embed_model, input=[text])
-        return list(resp.data[0].embedding)
-
-
-class RequestsHttp(HttpPort):
-    """requests 实现的 HttpPort。"""
-
-    def request(self, method, url, body=None, timeout=120) -> Tuple[int, Dict]:
-        if method == "GET":
-            r = http_requests.get(url, timeout=timeout)
-        else:
-            r = http_requests.request(method, url, json=body or {}, timeout=timeout,
-                                       headers={"Content-Type": "application/json"})
-        data = r.json() if r.text else {}
-        return r.status_code, data
-
-
-class SqliteImagePort(ImagePort):
-    """基于 agent_images 表的 ImagePort。"""
-
-    def __init__(self, db: SqliteDatabase):
-        self.db = db
-
-    def add_image(self, base64: str) -> str:
-        img_id = f"img-{uuid.uuid4()}"
-        now = time.time()
-        with self.db._conn() as conn:
-            conn.execute("INSERT INTO agent_images (id, base64, ref_count, created_at) VALUES (?, ?, 1, ?)",
-                         (img_id, base64, now))
-            conn.commit()
-        return img_id
-
-    def get_image(self, image_id):
-        with self.db._conn() as conn:
-            row = conn.execute("SELECT id, base64, created_at FROM agent_images WHERE id=?", (image_id,)).fetchone()
-            return dict(row) if row else None
-
-    def get_images_batch(self, ids):
-        return self.db.get_agent_images_batch(ids)
-
-    def increment_references(self, ids):
-        with self.db._conn() as conn:
-            for img_id in ids:
-                conn.execute("UPDATE agent_images SET ref_count = ref_count + 1 WHERE id=?", (img_id,))
-            conn.commit()
-
-    def decrement_references(self, ids):
-        deleted = []
-        with self.db._conn() as conn:
-            for img_id in ids:
-                row = conn.execute("SELECT ref_count FROM agent_images WHERE id=?", (img_id,)).fetchone()
-                if not row:
-                    continue
-                if row["ref_count"] <= 1:
-                    conn.execute("DELETE FROM agent_images WHERE id=?", (img_id,))
-                    deleted.append(img_id)
-                else:
-                    conn.execute("UPDATE agent_images SET ref_count = ref_count - 1 WHERE id=?", (img_id,))
-            conn.commit()
-        return deleted
-
 
 # ---------------------------------------------------------------------------
 # ANSI colors / CLI formatter
@@ -506,7 +231,8 @@ def run_cli_chat():
     http = RequestsHttp()
     image_port = SqliteImagePort(db)
 
-    agent = Agent(db=db, llm=llm, http=http, image_port=image_port, namespace="cli-agent")
+    namespace = _clean_env_value(os.getenv("AGENT_NAMESPACE")) or "cli-agent"
+    agent = Agent(db=db, llm=llm, http=http, image_port=image_port, namespace=namespace)
     sys_prompt = assemble_sys_prompt()
 
     session_id = db.create_agent_session("CLI 对话")
@@ -514,6 +240,7 @@ def run_cli_chat():
         base_url=os.getenv("AGENT_BASE_URL", "http://127.0.0.1:8000").rstrip("/"),
         sys_prompt=sys_prompt,
         api_spec={},
+        shell_cwd=_clean_env_value(os.getenv("AGENT_WORKDIR")) or None,
     )
 
     print(f"\n{Style.bold('NanoGhost')} {Style.dim('— AI Agent CLI')}")
@@ -587,7 +314,9 @@ def run_cli_chat():
 
 def assemble_sys_prompt() -> str:
     """从 prompts/ 目录加载提示词并组装 system prompt。"""
-    prompt_dir = os.path.join(os.path.dirname(__file__), "prompts")
+    inst_prompt_dir = _clean_env_value(os.getenv("AGENT_PROMPTS_DIR"))
+    repo_prompt_dir = os.path.join(os.path.dirname(__file__), "prompts")
+    prompt_dir = inst_prompt_dir if inst_prompt_dir and os.path.isdir(inst_prompt_dir) else repo_prompt_dir
 
     parts = []
 
@@ -621,13 +350,15 @@ def run_single_turn(message: str, skill_name: Optional[str] = None):
     http = RequestsHttp()
     image_port = SqliteImagePort(db)
 
-    agent = Agent(db=db, llm=llm, http=http, image_port=image_port, namespace="cli-agent")
+    namespace = _clean_env_value(os.getenv("AGENT_NAMESPACE")) or "cli-agent"
+    agent = Agent(db=db, llm=llm, http=http, image_port=image_port, namespace=namespace)
     sys_prompt = assemble_sys_prompt()
     session_id = db.create_agent_session("CLI 单次")
     config = AgentConfig(
         base_url=os.getenv("AGENT_BASE_URL", "http://127.0.0.1:8000").rstrip("/"),
         sys_prompt=sys_prompt,
         api_spec={},
+        shell_cwd=_clean_env_value(os.getenv("AGENT_WORKDIR")) or None,
     )
 
     # 预加载技能
@@ -662,7 +393,8 @@ async def run_feishu():
     image_port = SqliteImagePort(db)
 
     from agent_core import Agent
-    agent = Agent(db=db, llm=llm, http=http, image_port=image_port, namespace="feishu-agent")
+    namespace = _clean_env_value(os.getenv("AGENT_NAMESPACE")) or "feishu-agent"
+    agent = Agent(db=db, llm=llm, http=http, image_port=image_port, namespace=namespace)
 
     sys_prompt = assemble_sys_prompt()
     logger.info("System prompt 长度: %s 字", len(sys_prompt))
@@ -686,9 +418,22 @@ if __name__ == "__main__":
     parser.add_argument("message", nargs="?", default=None, help="单次对话消息")
     parser.add_argument("--skill", "-s", default=None, help="预加载技能名")
     parser.add_argument("--list-skills", "-l", action="store_true", help="列出所有可用技能")
+    parser.add_argument("--instance-dir", "-I", default=None, help="实例目录（多进程多机器人隔离）")
+    parser.add_argument("--gateway", action="store_true", help="启动 gateway 常驻服务")
+    parser.add_argument("--host", default="127.0.0.1", help="gateway 监听地址")
+    parser.add_argument("--port", type=int, default=0, help="gateway 监听端口（必填，>0）")
 
     args = parser.parse_args()
     mode = os.getenv("AGENT_MODE", "cli").lower()
+
+    if args.gateway:
+        if not args.port or int(args.port) <= 0:
+            raise SystemExit("--port is required for --gateway")
+        from gateway_server import instance_dir_from_env, serve_gateway
+
+        inst = instance_dir_from_env()
+        serve_gateway(host=str(args.host), port=int(args.port), instance_dir=inst)
+        raise SystemExit(0)
 
     if mode == "feishu":
         asyncio.run(run_feishu())

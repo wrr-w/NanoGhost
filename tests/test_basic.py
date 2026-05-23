@@ -1,8 +1,6 @@
 """Basic smoke tests for agent-core."""
 
-import json
 from typing import Any, Dict, List, Iterator, Optional
-from unittest.mock import MagicMock
 
 from agent_core import Agent, AgentConfig
 from agent_core.interfaces import DatabasePort, LLMPort, HttpPort
@@ -65,7 +63,9 @@ class MockDatabase(DatabasePort):
         self.cards = [c for c in self.cards if c.get("id") != card_id]
         return True
 
-    def load_all_memory_edges(self):
+    def load_all_memory_edges(self, namespace=None):
+        if namespace:
+            return [e for e in self.edges if e.get("namespace") == namespace]
         return self.edges
 
     def save_memory_edge(self, edge):
@@ -183,35 +183,9 @@ def test_sub_agent():
     print(f"  [OK] SubAgent created with namespace: {child.namespace}")
 
 
-def test_skill_registry():
-    from agent_core.skill import Skill, SkillResult
-
-    db = MockDatabase()
-    llm = MockLLM()
-    http = MockHttp()
-    agent = Agent(db=db, llm=llm, http=http)
-
-    class TestSkill(Skill):
-        name = "test_skill"
-        description = "A test skill"
-
-        def can_handle(self, parsed, messages):
-            return parsed.get("action") == "test"
-
-        def execute(self, parsed, messages, context):
-            yield ("status", {"message": "test skill executed"})
-
-    agent.register_skill(TestSkill())
-    skills = agent.list_skills()
-    assert len(skills) == 1
-    assert skills[0].name == "test_skill"
-    print("  [OK] Skill registry works")
-
-
 if __name__ == "__main__":
     test_agent_instantiation()
     test_agent_chat_stream_events()
     test_namespace_isolation()
     test_sub_agent()
-    test_skill_registry()
     print("\n[OK] All tests passed!")

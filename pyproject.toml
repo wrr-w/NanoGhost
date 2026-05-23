@@ -11,6 +11,9 @@ dependencies = [
     "python-dotenv>=1.0",
 ]
 
+[project.scripts]
+nanoghost = "agent_core.cli:main"
+
 [project.optional-dependencies]
 feishu = ["lark-oapi>=1.6.0"]
 test = ["pytest>=7.0"]

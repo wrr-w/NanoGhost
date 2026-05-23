@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from agent_core.interfaces import HttpPort, DatabasePort
 from agent_core.engine.executor import (
@@ -47,6 +47,7 @@ def _build_step_feedback(
     base_url: str,
     http: HttpPort,
     db: DatabasePort,
+    namespace: Optional[str] = None,
 ) -> Tuple[str, str]:
     """构建步骤反馈，返回 (obs, status_message)。"""
     obs = _format_step_result(step_out, all_step_results)
@@ -55,7 +56,7 @@ def _build_step_feedback(
         all_step_results[step_out["step"]] = all_step_results.get(step_out["step"], {})
         obs += _hint_placeholders_for_next_step(all_step_results)
 
-        suggestions = suggest_next_nodes(action, top_k=3, db=db)
+        suggestions = suggest_next_nodes(action, top_k=3, db=db, namespace=namespace)
         if suggestions:
             sug_lines = []
             for s in suggestions:

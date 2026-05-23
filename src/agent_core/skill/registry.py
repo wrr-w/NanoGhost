@@ -1,62 +1,45 @@
 import logging
 import os
-from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set
 
-from agent_core.skill.base import Skill
 from agent_core.skill.discovery import discover_skills
 from agent_core.skill.models import SkillDefinition
+from agent_core.utils.yaml_subset import load_yaml_subset
 
 logger = logging.getLogger("agent_core")
 
 
 class SkillRegistry:
-    """混合 Skill 注册中心。
+    """Skill 注册中心。
 
-    同时支持两种技能体系：
-    1. 旧的 Python ABC Skill（execute/can_handle，用于代码级拦截）
-    2. 新的 SKILL.md 指令集（兼容 opencode/claude-code/hermes 生态）
+    管理 SKILL.md 指令集（兼容 opencode/claude-code/hermes 生态）。
     """
 
     def __init__(self):
-        # 旧体系：Python ABC Skill
-        self._skills: Dict[str, Skill] = {}
-        # 新体系：SKILL.md 指令集
         self._skill_defs: Dict[str, SkillDefinition] = {}
 
-    # ======== 旧体系 API（保持向后兼容） ========
+    def _enabled_only(self) -> Optional[Set[str]]:
+        inst = (os.getenv("INSTANCE_DIR") or "").strip()
+        if not inst:
+            return None
+        cfg_path = os.path.join(os.path.abspath(os.path.expanduser(inst)), "config.yaml")
+        cfg = load_yaml_subset(cfg_path)
+        skills = cfg.get("skills") if isinstance(cfg, dict) else {}
+        skills = skills if isinstance(skills, dict) else {}
+        enabled_only = skills.get("enabled_only")
+        enabled_only = enabled_only if isinstance(enabled_only, list) else []
+        names = [str(x).strip() for x in enabled_only if str(x).strip()]
+        if not names:
+            return set()
+        return set(names)
 
-    def register(self, skill: Skill) -> None:
-        name = skill.name or skill.__class__.__name__
-        self._skills[name] = skill
+    def _allowed(self, name: str) -> bool:
+        allow = self._enabled_only()
+        if allow is None:
+            return True
+        return name in allow
 
-    def unregister(self, name: str) -> None:
-        self._skills.pop(name, None)
-
-    def get(self, name: str) -> Optional[Skill]:
-        return self._skills.get(name)
-
-    def list(self) -> List[Skill]:
-        return list(self._skills.values())
-
-    def find_handler(
-        self, parsed: Dict[str, Any], messages: List[Dict],
-    ) -> Optional[Skill]:
-        for skill in self._skills.values():
-            if skill.can_handle(parsed, messages):
-                return skill
-        return None
-
-    def execute(
-        self,
-        parsed: Dict[str, Any],
-        messages: List[Dict],
-        context: Dict[str, Any],
-    ) -> Iterator[Tuple[str, Any]]:
-        handler = self.find_handler(parsed, messages)
-        if handler:
-            yield from handler.execute(parsed, messages, context)
-
-    # ======== 新体系 API（SKILL.md 生态兼容） ========
+    # ======== SKILL.md 生态 API ========
 
     def discover(self, extra_dirs: Optional[List[str]] = None) -> int:
         """从标准生态目录自动发现并注册 SKILL.md 技能。
@@ -79,6 +62,8 @@ class SkillRegistry:
 
     def get_skill_def(self, name: str) -> Optional[SkillDefinition]:
         """按名称获取 SKILL.md 技能定义。"""
+        if not self._allowed(name):
+            return None
         return self._skill_defs.get(name)
 
     def add_skill_def(self, sd: SkillDefinition) -> None:
@@ -87,11 +72,11 @@ class SkillRegistry:
 
     def list_skill_defs(self) -> List[SkillDefinition]:
         """列出所有已发现的 SKILL.md 技能。"""
-        return list(self._skill_defs.values())
+        return [sd for n, sd in self._skill_defs.items() if self._allowed(n)]
 
     def list_skill_defs_dict(self) -> List[Dict[str, Any]]:
         """以字典列表形式返回技能定义（用于序列化/展示）。"""
-        return [sd.to_dict() for sd in self._skill_defs.values()]
+        return [sd.to_dict() for sd in self.list_skill_defs()]
 
     def remove_skill_def(self, name: str) -> None:
         self._skill_defs.pop(name, None)
@@ -118,7 +103,7 @@ class SkillRegistry:
         query_words = set(query_lower.split())
 
         scored: List[tuple[float, SkillDefinition]] = []
-        for sd in self._skill_defs.values():
+        for sd in self.list_skill_defs():
             score = 0.0
             text = (sd.name + " " + sd.description).lower()
 
@@ -148,7 +133,7 @@ class SkillRegistry:
         Returns:
             格式化的技能内容文本，或 None（技能不存在时）。
         """
-        sd = self._skill_defs.get(name)
+        sd = self.get_skill_def(name)
         if sd is None:
             return None
         return (
@@ -186,10 +171,9 @@ class SkillRegistry:
 
         return "\n".join(parts)
 
-    # ======== 通用查询 ========
-
     def all_skill_names(self) -> Set[str]:
-        """返回所有技能（新旧体系）的名称集合。"""
-        names: Set[str] = set(self._skills.keys())
-        names.update(self._skill_defs.keys())
-        return names
+        """返回所有技能名称集合。"""
+        allow = self._enabled_only()
+        if allow is None:
+            return set(self._skill_defs.keys())
+        return {n for n in self._skill_defs.keys() if n in allow}

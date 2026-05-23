@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -7,8 +8,11 @@ from .models import SkillDefinition
 
 logger = logging.getLogger("agent_core")
 
-# 技能根目录：仅 ~/.agents/skills
-AGENTS_SKILLS_DIR = os.path.expanduser("~/.agents/skills")
+# 技能根目录：默认 ~/.agents/skills，可通过环境变量覆盖（用于多实例隔离）
+AGENTS_SKILLS_DIR = os.path.expanduser(os.getenv("AGENTS_SKILLS_DIR", "~/.agents/skills"))
+
+# 缓存上次扫描时间戳和结果
+_cache: Dict[str, Tuple[float, List[SkillDefinition]]] = {}
 
 
 def _list_skill_names(basedir: str) -> List[str]:
@@ -62,17 +66,21 @@ def _parse_frontmatter(text: str) -> Tuple[Dict[str, Any], str]:
             key = key.strip()
             value = value.strip()
 
+            if value.startswith("[") and value.endswith("]"):
+                parsed_list = [v.strip().strip('"').strip("'") for v in value[1:-1].split(",") if v.strip()]
+                value = parsed_list
+
             if indent == 0:
                 current_nested = None
                 current_nested_key = None
                 if value:
-                    result[key] = value.strip('"').strip("'")
+                    result[key] = value
                 else:
                     result[key] = {}
                     current_nested = result[key]
                     current_nested_key = key
             elif indent > 0 and current_nested is not None:
-                current_nested[key] = value.strip('"').strip("'")
+                current_nested[key] = value.strip('"').strip("'") if isinstance(value, str) else value
         else:
             if current_nested_key and isinstance(result.get(current_nested_key), dict):
                 continue
@@ -174,7 +182,34 @@ def load_skill_from_dir(skill_dir: str) -> Optional[SkillDefinition]:
     )
 
 
-def discover_skills(extra_dirs: Optional[List[str]] = None) -> List[SkillDefinition]:
+def _dir_mtime(basedir: str) -> float:
+    """递归获取目录树下最新文件的 mtime。"""
+    latest = 0.0
+    try:
+        for root, _dirs, files in os.walk(basedir):
+            for f in files:
+                fp = os.path.join(root, f)
+                try:
+                    mt = os.path.getmtime(fp)
+                    if mt > latest:
+                        latest = mt
+                except OSError:
+                    pass
+    except Exception:
+        pass
+    return latest
+
+
+def _should_rescan(base: str) -> bool:
+    mt = _dir_mtime(base)
+    cached = _cache.get(base)
+    if cached is None:
+        return True
+    cached_mt, _ = cached
+    return mt > cached_mt
+
+
+def discover_skills(extra_dirs: Optional[List[str]] = None, force: bool = False) -> List[SkillDefinition]:
     """从 ~/.agents/skills 发现所有 SKILL.md 技能。
 
     Args:
@@ -206,6 +241,14 @@ def discover_skills(extra_dirs: Optional[List[str]] = None) -> List[SkillDefinit
     loaded_names: set[str] = set()
 
     for base in search_paths:
+        if not force and not _should_rescan(base):
+            _, cached_results = _cache.get(base, (0, []))
+            results.extend(cached_results)
+            for r in cached_results:
+                loaded_names.add(r.name)
+            continue
+
+        base_results: List[SkillDefinition] = []
         for skill_name in _list_skill_names(base):
             if skill_name in loaded_names:
                 continue
@@ -213,9 +256,12 @@ def discover_skills(extra_dirs: Optional[List[str]] = None) -> List[SkillDefinit
             if skill is not None:
                 loaded_names.add(skill_name)
                 results.append(skill)
+                base_results.append(skill)
                 logger.info(
                     f"[SkillDiscovery] 发现技能 [{skill.name}]: {skill.description} "
                     f"({skill.filepath})"
                 )
+
+        _cache[base] = (time.time(), base_results)
 
     return results

@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 from agent_core.interfaces import DatabasePort, LLMPort, HttpPort, ImagePort
 from agent_core.engine.config import AgentConfig
 from agent_core.agent import Agent
+from agent_core.channel.base import ChannelPort
 
 from .api import (
     download_message_resource,
@@ -30,7 +31,7 @@ from .api import (
 logger = logging.getLogger("agent_core")
 
 
-class FeishuWSClient:
+class FeishuWSClient(ChannelPort):
     """飞书 WebSocket 长连接客户端（基于 lark-oapi SDK）。
 
     接收飞书消息事件,转发给 Agent 处理并回发回复。
@@ -55,8 +56,14 @@ class FeishuWSClient:
         self._image_cache: Dict[str, Dict] = {}
         self._image_cache_lock = threading.Lock()
 
-        # 会话映射（chat_id → session_id）
-        self._session_by_chat: Dict[str, str] = {}
+    async def start(self) -> None:
+        """启动通道监听（ChannelPort 接口）。"""
+        await self.run_forever()
+
+    async def stop(self) -> None:
+        """停止通道监听（ChannelPort 接口）。"""
+        self._running = False
+        logger.info("[Feishu WS] 已停止")
 
     async def run_forever(self) -> None:
         """持续运行,建立 WebSocket 长连接。"""
@@ -107,10 +114,6 @@ class FeishuWSClient:
         client.on_reconnected = lambda: logger.info("[Feishu WS] 飞书长连接已建立（含重连）")
         logger.info("[Feishu WS] 正在连接飞书 WebSocket ...")
         client.start()
-
-    async def stop(self) -> None:
-        self._running = False
-        logger.info("[Feishu WS] 已停止")
 
     # ---- SDK 事件回调 ----
 
@@ -319,10 +322,17 @@ class FeishuWSClient:
                     else:
                         logger.error(f"[Feishu WS] 图片转base64失败 mid={mid[:8]} fk={fk[:12]}")
 
-            session_id = self._session_by_chat.get(chat_id)
+            session_id = None
+            chat_row = self.agent.db.get_chat_session(chat_id)
+            if chat_row:
+                session_id = chat_row.get("session_id")
+                existing = self.agent.db.get_agent_session(session_id)
+                if not existing:
+                    session_id = None
+                    self.agent.db.delete_chat_session(chat_id)
             if not session_id:
                 session_id = self.agent.db.create_agent_session(f"feishu:{chat_id[:8]}")
-                self._session_by_chat[chat_id] = session_id
+                self.agent.db.set_chat_session(chat_id, session_id)
 
             config = AgentConfig(
                 base_url=self._base_url,

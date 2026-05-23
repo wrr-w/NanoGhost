@@ -1,0 +1,45 @@
+# NanoGhost 全局配置 (~/.nanoghost/config.yaml)
+# 定义全局 MCP 服务器注册表、实例级的 MCP/Skill/Channel 白名单
+
+# ============================================================
+# MCP 服务器注册表（全局共享，所有实例引用）
+# ============================================================
+mcp_servers:
+  # 示例: GitHub MCP 服务器
+  # github:
+  #   transport: http_sse
+  #   url: https://api.githubcopilot.com/mcp/
+  #   headers:
+  #     Authorization: Bearer ${GITHUB_TOKEN}
+  #   timeout_seconds: 30
+  #   enabled: true
+
+  # 示例: 本地文件系统 MCP 服务器 (stdio)
+  # filesystem:
+  #   transport: stdio
+  #   command: npx
+  #   args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"]
+  #   timeout_seconds: 30
+  #   enabled: true
+
+# ============================================================
+# 实例级别配置 ({instance_dir}/config.yaml)
+# ============================================================
+# mcp:
+#   enabled_only:          # 仅启用指定的 MCP 服务器（白名单）
+#     - github
+#     - filesystem
+#
+# skills:
+#   enabled_only:          # 仅启用指定的技能（白名单）
+#     - lark-calendar
+#     - capture
+#
+# channels:
+#   feishu:
+#     enabled: true         # 启用飞书渠道
+#
+# mcp_server_config:
+#   cooldown_seconds: 60    # MCP 连接失败后的冷却秒数
+#   fail_threshold: 3       # 失败多少次后进入冷却
+#   probe_ttl_seconds: 60   # 工具列表探测缓存秒数

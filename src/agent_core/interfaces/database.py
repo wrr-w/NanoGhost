@@ -47,9 +47,11 @@ class DatabasePort(ABC):
     @abstractmethod
     def delete_memory_card(self, card_id: str) -> bool: ...
 
-    # --- 流程图边 ---
+    # --- 流程图边（支持 namespace 隔离） ---
     @abstractmethod
-    def load_all_memory_edges(self) -> List[Dict[str, Any]]: ...
+    def load_all_memory_edges(
+        self, namespace: Optional[str] = None,
+    ) -> List[Dict[str, Any]]: ...
 
     @abstractmethod
     def save_memory_edge(self, edge: Dict[str, Any]) -> None: ...

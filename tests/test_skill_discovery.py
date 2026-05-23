@@ -287,33 +287,7 @@ def test_registry_load_skill_content():
     assert registry.load_skill_content("nonexistent") is None
 
 
-def test_registry_backward_compat():
-    """Existing ABC Skill system still works alongside new system."""
-    from agent_core.skill import Skill
 
-    registry = SkillRegistry()
-
-    class TestSkill(Skill):
-        name = "legacy_skill"
-        description = "Old-style skill"
-
-        def can_handle(self, parsed, messages):
-            return parsed.get("action") == "test"
-
-        def execute(self, parsed, messages, context):
-            yield ("status", {"message": "legacy executed"})
-
-    registry.register(TestSkill())
-    assert len(registry.list()) == 1
-    assert registry.get("legacy_skill") is not None
-
-    registry.add_skill_def(SkillDefinition(
-        name="new-style-skill", description="New skill",
-        content="New instructions", filepath="/fake/SKILL.md",
-    ))
-    assert len(registry.list_skill_defs()) == 1
-    assert "legacy_skill" in registry.all_skill_names()
-    assert "new-style-skill" in registry.all_skill_names()
 
 
 def test_skill_definition_to_dict():
