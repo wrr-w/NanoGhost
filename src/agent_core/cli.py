@@ -288,6 +288,26 @@ def _cmd_instance_list(_args) -> int:
     return 0
 
 
+def _cmd_instance_create(args) -> int:
+    root = _instances_root()
+    name = str(args.name).strip()
+    if not name:
+        raise SystemExit("instance name is required")
+    inst = (root / name).resolve()
+    if inst.exists():
+        print(json.dumps({"ok": False, "name": name, "path": str(inst), "error": "already exists"}, ensure_ascii=False))
+        return 1
+    _ensure_instance_layout(inst)
+    repo = Path(__file__).resolve().parent.parent.parent
+    for src in [repo / ".env.example", repo / "prompts" / "agent_profile.md", repo / "prompts" / "agent_rules_conduct.md"]:
+        if src.is_file():
+            dst = inst / src.name
+            if not dst.exists():
+                dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    print(json.dumps({"ok": True, "name": name, "path": str(inst)}, ensure_ascii=False))
+    return 0
+
+
 def _cmd_instance_path(args) -> int:
     root = _instances_root()
     p = (root / str(args.name)).resolve()
@@ -393,8 +413,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     sub = parser.add_subparsers(dest="cmd")
 
-    inst = sub.add_parser("instance", help="manage instance directories (list / resolve path)")
+    inst = sub.add_parser("instance", help="manage instance directories (create / list / resolve path)")
     inst_sub = inst.add_subparsers(dest="inst_cmd")
+    inst_create = inst_sub.add_parser("create", help="create a new instance with default layout")
+    inst_create.add_argument("name", help="instance name (e.g. capture)")
+    inst_create.set_defaults(func=_cmd_instance_create)
     inst_list = inst_sub.add_parser("list", help="list all instances")
     inst_list.set_defaults(func=_cmd_instance_list)
     inst_path = inst_sub.add_parser("path", help="resolve instance name to absolute path")
