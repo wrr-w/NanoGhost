@@ -140,13 +140,11 @@ def _cmd_gateway_start(args) -> int:
         "cwd": str(inst),
         "env": env,
         "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
     }
     if os.name != "nt":
         popen_kwargs["start_new_session"] = True
     else:
-        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE
 
     p = subprocess.Popen(cmd, **popen_kwargs)
     rt = {
