@@ -29,9 +29,9 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from agent_core.engine.config import AgentConfig
 from agent_core.engine.messages import build_agent_messages_with_history
 from agent_core.interfaces import DatabasePort, ImagePort, LLMPort, HttpPort, LLMResponse
-from agent_core.memory.cards import record_successful_flow
+from agent_core.memory.cards import record_successful_flow, enrich_card_pitfalls, enrich_card_experience
 from agent_core.memory.graph import update_graph_from_steps
-from agent_core.engine.hooks import AgentHooks
+from agent_core.engine.hooks import AgentHooks, HookBus
 from agent_core.skill import SkillRegistry, SkillDefinition
 from agent_core.tool import ToolRegistry, ToolCall, ToolResult, register_builtins
 
@@ -70,7 +70,9 @@ class Agent:
         self.http = http
         self.image_port = image_port
         self.namespace = namespace
+        self._hook_bus = HookBus()
         self.hooks = hooks or AgentHooks()
+        self._register_legacy_hooks()
 
         # Skill 系统（SKILL.md 生态）
         self.skill_registry = SkillRegistry()
@@ -108,6 +110,34 @@ class Agent:
         self._sub_agents: Dict[str, "Agent"] = {}
 
     # ---- Skill 管理（SKILL.md 生态） ----
+
+
+    # ---- Hook 管理（事件驱动） ----
+
+    def on(self, event: str, fn) -> None:
+        """注册一个 hook 回调。
+
+        Args:
+            event: 事件名，如 "before_llm_call"。
+            fn: 回调函数，接受 emit() 传入的 **kwargs。
+        """
+        self._hook_bus.on(event, fn)
+
+    def _register_legacy_hooks(self):
+        """将 self.hooks 的方法注册到 bus（向后兼容）。"""
+        h = self.hooks
+        self._hook_bus.on("before_llm_call",
+            lambda **kw: h.before_llm_call(kw.get("messages"), kw.get("config")))
+        self._hook_bus.on("after_llm_call",
+            lambda **kw: h.after_llm_call(kw.get("response"), kw.get("messages")))
+        self._hook_bus.on("before_tool_dispatch",
+            lambda **kw: h.before_tool_dispatch(kw.get("name"), kw.get("args"), kw.get("ctx")))
+        self._hook_bus.on("after_tool_dispatch",
+            lambda **kw: h.after_tool_dispatch(kw.get("name"), kw.get("result"), kw.get("ctx")))
+        self._hook_bus.on("before_response",
+            lambda **kw: h.before_response(kw.get("reply"), kw.get("steps")))
+        self._hook_bus.on("on_error",
+            lambda **kw: h.on_error(kw.get("error")))
 
     def list_skill_defs(self) -> List["SkillDefinition"]:
         """列出所有发现的 SKILL.md 技能定义。"""
@@ -290,15 +320,15 @@ class Agent:
             # ---- 调用 LLM（始终传递 tool schemas） ----
             tools_schemas = self.tool_registry.get_available_schemas()
             try:
-                modified = self.hooks.before_llm_call(messages, config)
-                if modified is not None:
-                    messages = modified
+                for r in self._hook_bus.emit("before_llm_call", messages=messages, config=config):
+                    if r is not None:
+                        messages = r
                 response = self.llm.chat(messages, temperature=0.1, tools=tools_schemas)
-                modified = self.hooks.after_llm_call(response, messages)
-                if modified is not None:
-                    response = modified
+                for r in self._hook_bus.emit("after_llm_call", response=response, messages=messages):
+                    if r is not None:
+                        response = r
             except Exception as e:
-                self.hooks.on_error(e)
+                self._hook_bus.emit("on_error", error=e)
                 logger.error(f"Agent LLM chat error: {e}")
                 yield ("error", {"error": str(e)})
                 return
@@ -311,9 +341,9 @@ class Agent:
             if response.content and not response.has_tool_calls:
                 yield ("text_stream", {"content": response.content})
                 reply = response.content.strip() or "已完成。"
-                modified_reply = self.hooks.before_response(reply, all_steps_out)
-                if modified_reply is not None:
-                    reply = modified_reply
+                for r in self._hook_bus.emit("before_response", reply=reply, steps=all_steps_out):
+                    if r is not None:
+                        reply = r
 
                 if session_id:
                     try:
@@ -329,6 +359,40 @@ class Agent:
                             db=self.db, llm=self.llm, namespace=self.namespace,
                         )
                         update_graph_from_steps(all_steps_out, approved=False, db=self.db, namespace=self.namespace)
+
+                        # 踩坑提取 + 经验总结
+                        if flow_hash and self.llm:
+                            try:
+                                items = self.db.load_all_memory_cards(namespace=self.namespace)
+                                card_dict = None
+                                for it in items:
+                                    if it.get("flow_hash") == flow_hash:
+                                        card_dict = it
+                                        break
+                                if card_dict:
+                                    from agent_core.memory.cards import AgentMemoryCard
+                                    card = AgentMemoryCard.from_dict(card_dict)
+                                    new_pitfalls = enrich_card_pitfalls(card, all_steps_out, self.llm)
+                                    if new_pitfalls:
+                                        card.pitfalls.extend(new_pitfalls)
+                                    exp = enrich_card_experience(card, self.llm)
+                                    if exp and exp not in card.experience_notes:
+                                        card.experience_notes.append(exp)
+                                    if new_pitfalls or exp:
+                                        self.db.save_memory_card(card.to_dict())
+                            except Exception as e2:
+                                logger.error(f"[AgentMemory] enrich error: {e2}")
+
+                        # memory.md 规则提取
+                        try:
+                            memory_entries = _extract_memory_md_entries(
+                                user_message, reply, all_steps_out
+                            )
+                            if memory_entries:
+                                _append_to_memory_md(self.db, self.namespace, memory_entries)
+                        except Exception as e3:
+                            logger.error(f"[AgentMemory] memory.md error: {e3}")
+
                     except Exception as e:
                         logger.error(f"[AgentMemory] record error: {e}")
 
@@ -348,6 +412,7 @@ class Agent:
                 assistant_msg = {
                     "role": "assistant",
                     "content": response.content,
+                    "reasoning_content": response.reasoning_content,
                     "tool_calls": [
                         {
                             "id": tc.id,
@@ -372,6 +437,7 @@ class Agent:
                     try:
                         self.db.add_agent_message(
                             session_id, "assistant", json.dumps(assistant_msg, ensure_ascii=False),
+                            reasoning_content=response.reasoning_content,
                         )
                     except Exception as e:
                         logger.error(f"[Agent] save message error: {e}")
@@ -384,16 +450,20 @@ class Agent:
                             "id": tc.id,
                         })
 
-                    hook_args = self.hooks.before_tool_dispatch(tc.name, tc.arguments, tool_context)
-                    if hook_args is False:
-                        result = ToolResult(ok=False, error=f"工具 [{tc.name}] 被 hook 拦截", signal="__continue__")
-                    else:
-                        tc_args = hook_args if hook_args is not None else tc.arguments
-                        result = self.tool_registry.dispatch(tc.name, tc_args, tool_context)
+                    _blocked = False
+                    for _r in self._hook_bus.emit("before_tool_dispatch", name=tc.name, args=tc.arguments, ctx=tool_context):
+                        if _r is False:
+                            result = ToolResult(ok=False, error=f"工具 [{tc.name}] 被 hook 拦截", signal="__continue__")
+                            _blocked = True
+                            break
+                        elif isinstance(_r, dict):
+                            tc.arguments = _r
+                    if not _blocked:
+                        result = self.tool_registry.dispatch(tc.name, tc.arguments, tool_context)
 
-                    modified_result = self.hooks.after_tool_dispatch(tc.name, result, tool_context)
-                    if modified_result is not None:
-                        result = modified_result
+                    for _r in self._hook_bus.emit("after_tool_dispatch", name=tc.name, result=result, ctx=tool_context):
+                        if _r is not None:
+                            result = _r
 
                     for ev in _pending_events:
                         yield ev
@@ -431,3 +501,93 @@ class Agent:
             "steps": all_steps_out,
         }
         yield ("done", payload)
+
+
+# ──────────────────────────────────────────
+# memory.md 规则提取（不需要 LLM）
+# ──────────────────────────────────────────
+
+import re as _re
+
+def _extract_memory_md_entries(user_message: str, reply: str, steps: list) -> list[dict]:
+    """从对话中提取值得记入 memory.md 的信息。纯字符串判断，不需要 LLM。"""
+    entries = []
+
+    # H1: 用户自称
+    for prefix in ["叫我", "我是", "叫我了"]:
+        if prefix in user_message:
+            idx = user_message.find(prefix) + len(prefix)
+            name = user_message[idx:].split("。")[0].split("，")[0].split(" ")[0].strip()
+            if name and len(name) <= 10:
+                entries.append({"section": "user_info", "content": f"- Name: {name}"})
+                break
+
+    # H2: 用户偏好
+    for kw in ["喜欢", "不要", "倾向", "偏好"]:
+        if kw in user_message:
+            idx = user_message.find(kw)
+            text = user_message[idx:].split("。")[0].split("，")[0].strip()
+            if 3 < len(text) < 60:
+                entries.append({"section": "preference", "content": f"- {text}"})
+                break
+
+    # H3: 回复中的建议
+    for kw in ["建议", "注意", "推荐", "以后"]:
+        if kw in reply:
+            idx = reply.find(kw)
+            sentence = reply[idx:].split("。")[0].split("!")[0].strip()
+            if 5 < len(sentence) < 100:
+                entries.append({"section": "tips", "content": f"- {sentence}"})
+                break
+
+    # H4: 路径提取（从 terminal 输出中）
+    path_cmds = {"dir", "pwd", "where", "ls", "cd", "find"}
+    for s in (steps or []):
+        if s.get("method") != "EXEC":
+            continue
+        cmd = (s.get("path") or "").strip().split()[0] if s.get("path") else ""
+        if cmd not in path_cmds:
+            continue
+        for line in (s.get("result_preview") or "").split("\n"):
+            line = line.strip()
+            if _re.match(r"^[A-Z]:\\\\", line):
+                entries.append({"section": "project_context", "content": f"- Path: {line}"})
+                break
+
+    return entries
+
+
+def _append_to_memory_md(db, namespace: str, entries: list[dict]):
+    """将条目写入 memory.md 文件"""
+    import os as _os
+
+    inst_dir = _os.getenv("INSTANCE_DIR", "")
+    if not inst_dir:
+        return
+
+    path = _os.path.join(inst_dir, "memory.md")
+    MAX_LINES = 200
+
+    if not _os.path.isfile(path):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("# NanoGhost Memory\n\n")
+
+    with open(path, "r", encoding="utf-8") as f:
+        text = f.read()
+
+    for entry in entries:
+        section, line = entry["section"], entry["content"]
+        if line in text:
+            continue
+        header = f"## {section}"
+        if header in text:
+            text = text.replace(header, header + "\n" + line, 1)
+        else:
+            text += f"\n## {section}\n{line}\n"
+
+    lines = text.split("\n")
+    if len(lines) > MAX_LINES:
+        text = "\n".join(lines[:MAX_LINES]) + "\n\n<!-- truncated -->"
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)

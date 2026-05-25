@@ -42,7 +42,7 @@ from .memory import (
     suggest_next_nodes,
 )
 from .skill import SkillRegistry, SkillDefinition, discover_skills, load_skill_from_dir
-from .engine.hooks import AgentHooks
+from .engine.hooks import AgentHooks, HookBus
 from .tool import ToolCall, ToolDefinition, ToolResult, ToolRegistry, register_builtins
 from .utils import extract_json_from_llm_response, image2base64
 
@@ -50,6 +50,7 @@ __all__ = [
     "Agent",
     "AgentConfig",
     "AgentHooks",
+    "HookBus",
     "InstanceConfig",
     "load_instance_config",
     "DatabasePort",
