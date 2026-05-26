@@ -200,8 +200,15 @@ class WorkerManager:
         cmd = [python, str(self._run_py_path())]
 
         self._runtime_dir().mkdir(parents=True, exist_ok=True)
+        log_path = str(self._runtime_dir() / f"{worker_key}.log")
         try:
-            p = subprocess.Popen(cmd, cwd=str(self.instance_dir), env=env)
+            with open(log_path, "a", encoding="utf-8") as log_f:
+                p = subprocess.Popen(
+                    cmd,
+                    cwd=str(self.instance_dir),
+                    stdout=log_f,
+                    stderr=log_f,
+                )
         except Exception as e:
             rt = {"running": False, "pid": None, "started_at": None, "last_error": str(e), "updated_at": int(time.time())}
             self._save_runtime(worker_key, rt)
