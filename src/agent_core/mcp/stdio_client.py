@@ -32,14 +32,27 @@ class MCPStdioClient:
             timeout = max(1, int(self.cfg.timeout_seconds))
 
             try:
-                self._process = subprocess.Popen(
-                    [command] + args,
+                import io
+                _popen_kw = dict(
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
                     text=True,
                     bufsize=1,
+                    encoding='utf-8',
                 )
+                if hasattr(subprocess, 'CREATE_NO_WINDOW'):
+                    _popen_kw['creationflags'] = subprocess.CREATE_NO_WINDOW
+                import os as _os
+                self._process = subprocess.Popen(
+                    [command] + args,
+                    **_popen_kw,
+                )
+                import time
+                time.sleep(0.5)
+                if self._process.poll() is not None:
+                    self._connected = False
+                    return False, f'process exited immediately (code={self._process.returncode})'
             except Exception as e:
                 self._connected = False
                 return False, str(e)
@@ -48,13 +61,16 @@ class MCPStdioClient:
             self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
             self._reader_thread.start()
 
-            ok, err = self._initialize(timeout=timeout)
-            if not ok:
+        # lock must be released before _initialize/_send_jsonrpc
+        # or _send_jsonrpc will deadlock trying to acquire it
+        ok, err = self._initialize(timeout=timeout)
+        if not ok:
+            with self._lock:
                 self._connected = False
-                self._cleanup()
-                return False, err
+            self._cleanup()
+            return False, err
 
-            return True, None
+        return True, None
 
     def _initialize(self, timeout: int = 10) -> Tuple[bool, Optional[str]]:
         init_params = {
@@ -132,6 +148,11 @@ class MCPStdioClient:
         try:
             self._process.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
             self._process.stdin.flush()
+        except BrokenPipeError:
+            with self._lock:
+                self._pending.pop(rid, None)
+            self._connected = False
+            return False, None, "pipe broken", int((time.time() - t0) * 1000)
         except Exception as e:
             with self._lock:
                 self._pending.pop(rid, None)

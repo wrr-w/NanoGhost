@@ -158,9 +158,14 @@ class MCPManager:
         if inst is None:
             return
 
+        import logging
+        _log = logging.getLogger('agent_core')
+        _log.info(f'[MCP] refresh_all: {inst}')
+
         with self._lock:
             self._ensure_loaded(inst)
             servers = list(self._servers.keys())
+
 
         for sid in servers:
             self.refresh_server(sid, instance_dir=inst)
@@ -169,6 +174,9 @@ class MCPManager:
         inst = instance_dir or _instance_dir_from_env()
         if inst is None:
             return
+
+        import logging
+        _log = logging.getLogger('agent_core')
 
         with self._lock:
             self._ensure_loaded(inst)
@@ -189,22 +197,29 @@ class MCPManager:
         if cache.last_probe_at and now - cache.last_probe_at < self._probe_ttl_seconds and cache.tools:
             return
 
-        probe = client.probe()
+        # stdio: probe is redundant — list_tools() internally calls _ensure_connected()
+        _timer = time.time()
+        try:
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError
+            _exe = ThreadPoolExecutor(max_workers=1)
+            try:
+                _ft = _exe.submit(client.list_tools)
+                ok, result, err, _dur = _ft.result(timeout=40)
+            except TimeoutError:
+                _ft.cancel()
+                raise
+            finally:
+                _exe.shutdown(wait=False)
+        except Exception as _e:
+            ok, result, err, _dur = False, None, str(_e), int((time.time() - _timer)*1000)
+            _log.error(f'[MCP] {server_id}: list_tools exception: {_e}')
+        _log.info(f'[MCP] {server_id}: list_tools took {int((time.time()-_timer)*1000)}ms, ok={ok}')
         cache.last_probe_at = now
-        if not probe.ok:
-            cache.status = probe.status
-            cache.last_error = probe.error or ""
-            cache.fail_count += 1
-            if cache.fail_count >= self._fail_threshold:
-                cache.cooldown_until = now + self._cooldown_seconds
-            self._unregister_server_tools(server_id)
-            return
-
-        ok, result, err, _dur = client.list_tools()
         if not ok:
             cache.status = "error"
             cache.last_error = err or "list_tools failed"
             cache.fail_count += 1
+            _log.error(f'[MCP] {server_id}: list_tools failed: {err}')
             if cache.fail_count >= self._fail_threshold:
                 cache.cooldown_until = now + self._cooldown_seconds
             self._unregister_server_tools(server_id)
@@ -217,6 +232,7 @@ class MCPManager:
             self._register_server_tools(server_id, tools)
             cache.tools = tools
             cache.tools_hash = tools_hash
+        _log.info(f'[MCP] {server_id}: {len(tools)} tools registered')
         cache.status = "connected"
         cache.last_error = ""
         cache.fail_count = 0

@@ -446,7 +446,8 @@ def _cmd_mcp_probe(args) -> int:
         if not s:
             results.append({"server_id": sid, "ok": False, "status": "disabled_or_not_allowed"})
             continue
-        client = MCPHttpSSEClient(s)
+        from agent_core.mcp.stdio_client import MCPStdioClient
+        client = MCPStdioClient(s) if s.transport == "stdio" else MCPHttpSSEClient(s)
         r = client.probe()
         results.append({"server_id": sid, "ok": r.ok, "status": r.status, "error": r.error, "duration_ms": r.duration_ms})
     print(json.dumps({"instance_dir": str(inst), "results": results}, ensure_ascii=False, indent=2))
