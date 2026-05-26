@@ -175,6 +175,73 @@ def send_images_base64_to_chat(chat_id: str, images_base64: List[str]) -> Dict[s
     return result
 
 
+# ---- 消息反应（Reaction） ----
+
+
+def add_reaction_to_message(message_id: str, emoji_type: str = "SKULL") -> bool:
+    """给消息添加 Reaction 表情（默认 SKULL，完整列表见 lark-im reactions skill）。
+
+    POST /im/v1/messages/{message_id}/reactions
+    """
+    if not message_id:
+        return False
+    body = {
+        "reaction_type": {"emoji_type": emoji_type},
+    }
+    data = _feishu_request("POST", f"/im/v1/messages/{message_id}/reactions", body=body)
+    if data and data.get("code") == 0:
+        logger.info(f"[Feishu] 已对消息 {message_id[:12]} 添加 reaction {emoji_type}")
+        return True
+    # 99991671 = already reacted, 不算失败
+    if data and data.get("code") in (99991671,):
+        return True
+    logger.warning(f"[Feishu] 添加 reaction 失败 msg={message_id[:12]}: {data}")
+    return False
+
+
+def delete_reaction_to_message(message_id: str, reaction_id: str = "") -> bool:
+    """删除消息上的 Reaction 表情。如果不传 reaction_id，会尝试删除第一个 reaction。
+    实际使用中通常直接传空字符串，飞书 API 会删除当前用户添加的所有指定类型 reaction。
+
+    DELETE /im/v1/messages/{message_id}/reactions/{reaction_id}
+    """
+    if not message_id:
+        return False
+    # 先列出 reaction 找到 ID
+    token = get_tenant_access_token()
+    if not token:
+        return False
+    import requests
+    list_url = f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/reactions?page_size=50"
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        resp = requests.get(list_url, headers=headers, timeout=10)
+        data = resp.json()
+        if data.get("code") != 0:
+            logger.warning(f"[Feishu] 列出 reaction 失败 msg={message_id[:12]}: {data}")
+            # 尝试直接删除默认 reaction_id
+            if reaction_id:
+                del_url = f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/reactions/{reaction_id}"
+                del_resp = requests.delete(del_url, headers=headers, timeout=10)
+                del_data = del_resp.json()
+                return del_data.get("code") == 0
+            return False
+        items = data.get("data", {}).get("items", [])
+        for item in items:
+            rid = item.get("reaction_id") or item.get("id") or ""
+            if rid:
+                del_url = f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/reactions/{rid}"
+                del_resp = requests.delete(del_url, headers=headers, timeout=10)
+                if del_resp.json().get("code") == 0:
+                    logger.info(f"[Feishu] 已删除消息 {message_id[:12]} 的 reaction {rid[:12]}")
+                    return True
+        logger.info(f"[Feishu] 消息 {message_id[:12]} 没有可删除的 reaction")
+        return True
+    except Exception as e:
+        logger.warning(f"[Feishu] 删除 reaction 异常 msg={message_id[:12]}: {e}")
+        return False
+
+
 # ---- 资源下载 ----
 
 def download_message_resource(

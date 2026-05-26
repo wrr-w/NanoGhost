@@ -5,7 +5,7 @@ import os
 import re
 import time
 import uuid
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent_core.interfaces import DatabasePort, LLMPort
@@ -72,7 +72,12 @@ class AgentMemoryCard:
     rejected_count: int = 0
     trigger_count: int = 0
     scene_tag: Optional[str] = None
-    namespace: Optional[str] = None   # 多实例隔离
+    namespace: Optional[str] = None
+
+    # 踩坑记录：LLM 在步骤失败/重试时生成
+    pitfalls: List[str] = field(default_factory=list)
+    # 经验总结：LLM 在累计执行 5 次时生成
+    experience_notes: List[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AgentMemoryCard":
@@ -93,6 +98,8 @@ class AgentMemoryCard:
             trigger_count=int(data.get("trigger_count") or 0),
             scene_tag=data.get("scene_tag"),
             namespace=data.get("namespace"),
+            pitfalls=list(data.get("pitfalls") or []),
+            experience_notes=list(data.get("experience_notes") or []),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -395,3 +402,137 @@ def list_flows(db: DatabasePort, namespace: Optional[str] = None) -> List[Dict[s
     cards = [AgentMemoryCard.from_dict(it) for it in items]
     cards.sort(key=lambda c: c.updated_at, reverse=True)
     return [c.to_dict() for c in cards]
+
+
+# ──────────────────────────────────────────
+# 踩坑提取 + 经验总结（需要 LLM）
+# ──────────────────────────────────────────
+
+def enrich_card_pitfalls(card: AgentMemoryCard, steps: list, llm: Optional[LLMPort]) -> list[str]:
+    """检测失败/重试模式，需要时调 LLM 生成踩坑文本。
+
+    流程规则:
+      遍历 steps
+        step[i].ok == False?
+          -> step[i+1].ok == True AND 同 method+path? -> LLM 生成重试踩坑
+          -> 否 -> LLM 生成失败踩坑
+
+    Args:
+        card: 要 enrich 的卡片
+        steps: 本次执行的步骤列表
+        llm: LLM 端口（None 时跳过）
+
+    Returns:
+        新生成的 pitfalls 列表（尚未写入 card）
+    """
+    if not steps or not llm:
+        return []
+
+    new_pitfalls = []
+    intent = card.intent_summary
+
+    for i in range(len(steps)):
+        s = steps[i]
+        if s.get("ok") is not False:
+            continue
+
+        # 分支: 失败后重试成功?
+        if i + 1 < len(steps):
+            nxt = steps[i + 1]
+            if nxt.get("ok") and s.get("method") == nxt.get("method") and s.get("path") == nxt.get("path"):
+                text = _llm_pitfall_retry(llm, intent, s, nxt)
+                if text and text not in card.pitfalls:
+                    new_pitfalls.append(text)
+                continue
+
+        # 分支: 普通失败
+        text = _llm_pitfall_error(llm, intent, s)
+        if text and text not in card.pitfalls:
+            new_pitfalls.append(text)
+
+    return new_pitfalls
+
+
+def _llm_pitfall_error(llm: LLMPort, intent: str, step: dict) -> Optional[str]:
+    """调 LLM 生成失败的踩坑文本"""
+    step_num = step.get("step", "?")
+    method = step.get("method", "")
+    path = step.get("path", "")
+    preview = str(step.get("result_preview") or "")[:200]
+    error = str(step.get("error") or "")[:200]
+
+    prompt = (
+        f"你在执行「{intent}」流程时，以下步骤失败了:\n"
+        f"步骤 {step_num}: {method} {path}\n"
+        f"返回: {preview}\n"
+        f"错误: {error}\n\n"
+        f"请写出 1-2 句踩坑提醒（不超过 50 字，具体可操作）:"
+    )
+    try:
+        resp = llm.chat([{"role": "user", "content": [{"type": "text", "text": prompt}]}])
+        return resp.content.strip() if resp and resp.content else None
+    except Exception:
+        return None
+
+
+def _llm_pitfall_retry(llm: LLMPort, intent: str, failed: dict, success: dict) -> Optional[str]:
+    """调 LLM 生成重试踩坑文本"""
+    step_num = failed.get("step", "?")
+    method = failed.get("method", "")
+    path = failed.get("path", "")
+    fail_preview = str(failed.get("result_preview") or "")[:200]
+
+    prompt = (
+        f"你在执行「{intent}」流程时，以下步骤首次失败后重试成功:\n"
+        f"步骤 {step_num}: {method} {path}\n"
+        f"首次失败: {fail_preview}\n\n"
+        f"请写出 1-2 句踩坑提醒（不超过 50 字，说明什么情况下会失败及如何避免）:"
+    )
+    try:
+        resp = llm.chat([{"role": "user", "content": [{"type": "text", "text": prompt}]}])
+        return resp.content.strip() if resp and resp.content else None
+    except Exception:
+        return None
+
+
+def enrich_card_experience(card: AgentMemoryCard, llm: Optional[LLMPort]) -> Optional[str]:
+    """累计执行 5 次时调 LLM 生成经验总结。
+
+    流程规则:
+      success_count >= 3 AND % 5 == 0? -> LLM 生成经验
+
+    Args:
+        card: 卡片
+        llm: LLM 端口
+
+    Returns:
+        经验文本（尚未写入 card），或 None
+    """
+    if card.success_count < 3 or card.success_count % 5 != 0:
+        return None
+    if not llm:
+        return None
+
+    steps_summary = " -> ".join(
+        f"{s.get('method','')} {s.get('path','')}" for s in (card.steps or [])
+    )[:300]
+
+    pitfalls_text = ""
+    if card.pitfalls:
+        pitfalls_text = "\n踩坑记录:\n" + "\n".join(f"- {p}" for p in card.pitfalls)
+
+    prompt = (
+        f"以下流程已成功执行 {card.success_count} 次:\n"
+        f"意图: {card.intent_summary}\n"
+        f"步骤: {steps_summary}{pitfalls_text}\n\n"
+        f"请写出该流程的经验总结，包括:\n"
+        f"- 标准操作顺序\n"
+        f"- 需要特别注意的点\n"
+        f"- 常见的变体或分支\n"
+        f"不超过 100 字:"
+    )
+    try:
+        resp = llm.chat([{"role": "user", "content": [{"type": "text", "text": prompt}]}])
+        return resp.content.strip() if resp and resp.content else None
+    except Exception:
+        return None

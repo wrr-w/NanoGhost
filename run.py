@@ -332,6 +332,22 @@ def assemble_sys_prompt() -> str:
     if rules:
         parts.append(rules)
 
+    # 注入 memory.md
+    inst_dir = _clean_env_value(os.getenv("INSTANCE_DIR"))
+    if inst_dir:
+        memory_path = os.path.join(inst_dir, "memory.md")
+        if os.path.isfile(memory_path):
+            try:
+                with open(memory_path, encoding="utf-8") as f:
+                    memory_content = f.read().strip()
+                if memory_content:
+                    parts.append(
+                        f"## 记住的信息\n\n{memory_content}\n\n"
+                        f"如需更新，使用 memory_write 工具。"
+                    )
+            except Exception:
+                pass
+
     sys_prompt = "\n\n".join(parts)
     # 替换占位符（若无 API spec 则会保留原文）
     sys_prompt = sys_prompt.replace("{{agent_api_doc}}", "(无可用 API)")

@@ -713,6 +713,101 @@ SKILL_MANAGE_DEF = {
 # Register all built-in tools
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# memory_write — write to memory.md
+# ---------------------------------------------------------------------------
+
+MEMORY_WRITE_DEF = {
+    "type": "object",
+    "properties": {
+        "action": {
+            "type": "string",
+            "enum": ["append", "update", "delete"],
+            "description": "append: add new entry / update: replace existing / delete: remove",
+        },
+        "section": {
+            "type": "string",
+            "description": "Category, e.g. user_info, preference, tips, project_context",
+        },
+        "content": {
+            "type": "string",
+            "description": "Entry content (used for append/update)",
+        },
+        "key": {
+            "type": "string",
+            "description": "Lookup key (used for update/delete)",
+        },
+    },
+    "required": ["action", "section"],
+}
+
+
+def memory_write(args: dict, ctx: dict) -> ToolResult:
+    """Write/update/delete entries in memory.md"""
+    action = args.get("action", "")
+    section = args.get("section", "")
+    content = args.get("content", "")
+    key = args.get("key", "")
+
+    inst_dir = os.getenv("INSTANCE_DIR", "")
+    if not inst_dir:
+        return ToolResult(ok=False, error="INSTANCE_DIR not set")
+
+    path = os.path.join(inst_dir, "memory.md")
+    if not os.path.isfile(path):
+        try:
+            os.makedirs(inst_dir, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("# NanoGhost Memory\n\n")
+        except Exception as e:
+            return ToolResult(ok=False, error=f"Cannot create memory.md: {e}")
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except Exception as e:
+        return ToolResult(ok=False, error=f"Cannot read memory.md: {e}")
+
+    if action == "append":
+        header = f"## {section}"
+        entry = content if content.startswith("- ") else f"- {content}"
+        if header in text:
+            text = text.replace(header, header + "\n" + entry, 1)
+        else:
+            text += f"\n## {section}\n{entry}\n"
+
+    elif action == "update":
+        if not key:
+            return ToolResult(ok=False, error="key required for update")
+        old_pattern = f"- {key}:"
+        for line in text.split("\n"):
+            if line.strip().startswith(old_pattern):
+                new_line = f"- {key}: {content}" if content else f"- {key}"
+                text = text.replace(line, new_line, 1)
+                break
+        else:
+            return ToolResult(ok=False, error=f"Not found: {old_pattern}")
+
+    elif action == "delete":
+        if not key:
+            return ToolResult(ok=False, error="key required for delete")
+        text = "\n".join(
+            l for l in text.split("\n")
+            if not l.strip().startswith(f"- {key}:")
+        )
+
+    else:
+        return ToolResult(ok=False, error=f"Unknown action: {action}")
+
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+    except Exception as e:
+        return ToolResult(ok=False, error=f"Cannot write memory.md: {e}")
+
+    return ToolResult(ok=True, data=f"memory.md {action} ok")
+
+
 def _has_skills_dir() -> bool:
     return os.path.isdir(AGENTS_SKILLS_DIR)
 
@@ -758,6 +853,12 @@ def register_builtins(registry: Any) -> None:
                                   "安装后自动重新发现技能。使用前可先用 skills_list 查看可用技能。",
                       parameters=SKILL_INSTALL_DEF, category="skill",
                       check_fn=lambda: _has_skills_dir() and _has_npx())
+
+    # ---- memory ----
+    registry.register("memory_write", memory_write,
+                      description="Write/update/delete entries in memory.md. "
+                                  "Use this to remember user preferences, project info, tips, etc.",
+                      parameters=MEMORY_WRITE_DEF, category="system")
 
     # ---- subagent (always available) ----
     registry.register("delegate_task", delegate_task,

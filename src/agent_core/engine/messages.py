@@ -46,16 +46,21 @@ def build_agent_messages_with_history(
         for idx, m in enumerate(similar_flows, start=1):
             intent = (m.get("intent_summary") or "").strip()
             steps = m.get("steps") or []
-            step_lines: List[str] = []
-            for s in (steps[:3] if isinstance(steps, list) else []):
-                method = (s.get("method") or "").upper()
-                path = s.get("path") or ""
-                step_lines.append(f"  - {method} {path}")
+            pitfalls = m.get("pitfalls") or []
+            experiences = m.get("experience_notes") or []
+
+            step_text = " -> ".join(
+                f"{s.get('method','')} {s.get('path','')}" for s in (steps[:5] if isinstance(steps, list) else [])
+            )
             part = f"{idx}. {intent or '（无摘要）'}"
-            if step_lines:
-                part += "\n" + "\n".join(step_lines)
+            if step_text:
+                part += f"\n   步骤: {step_text}"
+            if pitfalls:
+                part += "\n   踩坑: " + "; ".join(pitfalls[:3])
+            if experiences:
+                part += "\n   经验: " + "; ".join(experiences[:2])
             lines.append(part)
-        mem_text = "【历史相似流程】\n" + "\n".join(lines) + "\n\n可参考这些流程，不必完全照抄。"
+        mem_text = "【历史相似流程】\n" + "\n".join(lines) + "\n\n可参考这些流程。注意踩坑提醒。"
         out.append({"role": "system", "content": [{"type": "text", "text": mem_text}]})
 
     history = []
@@ -91,7 +96,11 @@ def build_agent_messages_with_history(
                         out.append({"role": "user", "content": [{"type": "text", "text": "用户说：" + content}]})
                 else:
                     steps_json = m.get("steps_json")
+                    reasoning_content = m.get("reasoning_content")
                     assistant_content = [{"type": "text", "text": content}]
+                    assistant_msg = {"role": "assistant", "content": assistant_content}
+                    if reasoning_content:
+                        assistant_msg["reasoning_content"] = reasoning_content
                     if steps_json:
                         try:
                             steps = json.loads(steps_json)
@@ -107,7 +116,7 @@ def build_agent_messages_with_history(
                                 assistant_content.append({"type": "text", "text": summary})
                         except Exception:
                             pass
-                    out.append({"role": "assistant", "content": assistant_content})
+                    out.append(assistant_msg)
 
     current_user_content = []
     if user_images:

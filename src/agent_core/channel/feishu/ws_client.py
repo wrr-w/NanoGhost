@@ -10,6 +10,7 @@ import asyncio
 import logging
 import os
 import re
+import sys
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -20,6 +21,7 @@ from agent_core.agent import Agent
 from agent_core.channel.base import ChannelPort
 
 from .api import (
+    add_reaction_to_message,
     download_message_resource,
     extract_image_keys_from_event_message,
     extract_text_from_event_message,
@@ -91,6 +93,15 @@ class FeishuWSClient(ChannelPort):
     def _run_sdk_in_thread(self) -> None:
         import lark_oapi as lark
         import lark_oapi.ws.client as ws_client
+
+        # 让 Lark SDK 的日志也走统一的 logging 输出到 stderr + stdout
+        lark_logger = logging.getLogger("Lark")
+        lark_logger.handlers.clear()
+        lark_logger.propagate = True
+        if not any(isinstance(h, logging.StreamHandler) and h.stream is sys.stdout for h in logging.getLogger().handlers):
+            stdout_handler = logging.StreamHandler(sys.stdout)
+            stdout_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-5s | %(name)s | %(message)s"))
+            logging.getLogger().addHandler(stdout_handler)
 
         new_loop = asyncio.new_event_loop()
         asyncio.set_event_loop(new_loop)
@@ -195,12 +206,24 @@ class FeishuWSClient(ChannelPort):
                 logger.info(f"[Feishu WS] 群聊未@机器人，跳过")
                 return
 
+        # ---- 斜杠命令 ----
+        if text.startswith("/new") or text.startswith("/reset"):
+            self._handle_new_session_command(chat_id)
+            return
+
+        if text.startswith("/stop"):
+            send_text_message_to_chat(chat_id, "（已停止）")
+            return
+
         if text.startswith("/img"):
             self._handle_img_command(chat_id, text)
             return
 
         cached = self._consume_image_cache(chat_id)
-        self._run_agent_and_reply(chat_id, text, cached)
+        # 给消息加 Reaction 表示正在工作
+        if message_id:
+            add_reaction_to_message(message_id)
+        self._run_agent_and_reply(chat_id, text, cached, message_id)
 
     # ---- 图片缓存 ----
 
@@ -234,6 +257,20 @@ class FeishuWSClient(ChannelPort):
             return resources
 
     # ---- /img 命令 ----
+
+    def _handle_new_session_command(self, chat_id: str) -> None:
+        """处理 /new 和 /reset 命令：清空会话记录，开启新对话。"""
+        try:
+            chat_row = self.agent.db.get_chat_session(chat_id)
+            if chat_row:
+                session_id = chat_row.get("session_id")
+                if session_id:
+                    self.agent.db.delete_agent_session(session_id)
+                self.agent.db.delete_chat_session(chat_id)
+            send_text_message_to_chat(chat_id, "✅ 已开启新对话，上下文已清空。")
+            logger.info(f"[Feishu WS] /new 新对话 chat_id={chat_id}")
+        except Exception:
+            logger.exception(f"[Feishu WS] /new 失败 chat_id={chat_id}")
 
     def _handle_img_command(self, chat_id: str, text: str) -> None:
         parts = [p for p in text.split() if p.strip()]
@@ -293,13 +330,37 @@ class FeishuWSClient(ChannelPort):
             lines.append("请直接回复选项内容或序号。")
         return "\n".join(lines).strip()
 
+    def _refresh_sys_prompt(self) -> None:
+        """每次消息处理前，重新读取 memory.md 并注入 sys_prompt。"""
+        inst_dir = os.environ.get("INSTANCE_DIR", "")
+        if not inst_dir:
+            return
+        memory_path = os.path.join(inst_dir, "memory.md")
+        if not os.path.isfile(memory_path):
+            return
+        try:
+            with open(memory_path, encoding="utf-8") as f:
+                memory_content = f.read().strip()
+            if not memory_content:
+                return
+            marker = "## 记住的信息"
+            if marker in self._sys_prompt:
+                idx = self._sys_prompt.find(marker)
+                self._sys_prompt = self._sys_prompt[:idx].rstrip()
+            self._sys_prompt += "\n\n## 记住的信息\n\n" + memory_content + "\n\n"
+        except Exception:
+            pass
+
     def _run_agent_and_reply(
         self,
         chat_id: str,
         text: str,
         cached_resources: List[Dict[str, str]],
+        message_id: str = "",
     ) -> None:
         try:
+            # 每次处理前刷新记忆
+            self._refresh_sys_prompt()
             images_base64: List[str] = []
             if cached_resources:
                 for r in cached_resources:
@@ -386,3 +447,13 @@ class FeishuWSClient(ChannelPort):
 
         except Exception:
             logger.exception(f"[Feishu WS] 处理消息失败 chat_id={chat_id}")
+            try:
+                send_text_message_to_chat(chat_id, "（处理消息时发生异常，请重试）")
+            except Exception:
+                pass
+        finally:
+            try:
+                if message_id:
+                    delete_reaction_to_message(message_id)
+            except Exception:
+                pass

@@ -48,7 +48,8 @@ class SqliteDatabase(DatabasePort):
                 CREATE TABLE IF NOT EXISTS agent_messages (
                     id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
                     role TEXT NOT NULL, type TEXT, content TEXT NOT NULL,
-                    steps_json TEXT, created_at REAL NOT NULL
+                    steps_json TEXT, reasoning_content TEXT,
+                    created_at REAL NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS agent_images (
                     id TEXT PRIMARY KEY, base64 TEXT NOT NULL,
@@ -87,6 +88,12 @@ class SqliteDatabase(DatabasePort):
                 CREATE INDEX IF NOT EXISTS idx_agent_chat_sessions_session
                     ON agent_chat_sessions(session_id);
             """)
+            conn.commit()
+            # Migrate existing databases: add reasoning_content column if missing
+            try:
+                conn.execute("ALTER TABLE agent_messages ADD COLUMN reasoning_content TEXT")
+            except Exception:
+                pass  # column already exists
             conn.commit()
 
     def create_agent_session(self, title="新对话"):
@@ -144,13 +151,13 @@ class SqliteDatabase(DatabasePort):
             conn.commit()
             return cur.rowcount > 0
 
-    def add_agent_message(self, session_id, role, content, type="text", steps_json=None):
+    def add_agent_message(self, session_id, role, content, type="text", steps_json=None, reasoning_content=None):
         mid = str(uuid.uuid4())
         now = time.time()
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO agent_messages (id,session_id,role,type,content,steps_json,created_at) VALUES (?,?,?,?,?,?,?)",
-                (mid, session_id, role, type, content, steps_json, now),
+                "INSERT INTO agent_messages (id,session_id,role,type,content,steps_json,reasoning_content,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (mid, session_id, role, type, content, steps_json, reasoning_content, now),
             )
             conn.execute("UPDATE agent_sessions SET updated_at=? WHERE id=?", (now, session_id))
             conn.commit()
@@ -202,8 +209,9 @@ class SqliteDatabase(DatabasePort):
                 INSERT INTO agent_memory_cards (id, flow_hash, intent_summary, intent_examples_json,
                     intent_vector_json, flow_signature_json, steps_json,
                     success_count, total_rounds, approved_count, rejected_count,
-                    trigger_count, scene_tag, namespace, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    trigger_count, scene_tag, namespace, created_at, updated_at,
+                    pitfalls, experience_notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     intent_summary=excluded.intent_summary,
                     intent_examples_json=excluded.intent_examples_json,
@@ -216,6 +224,8 @@ class SqliteDatabase(DatabasePort):
                     rejected_count=excluded.rejected_count,
                     trigger_count=excluded.trigger_count,
                     namespace=excluded.namespace,
+                    pitfalls=excluded.pitfalls,
+                    experience_notes=excluded.experience_notes,
                     updated_at=excluded.updated_at
             """, (
                 card.get("id"), card.get("flow_hash"), card.get("intent_summary"),
@@ -227,6 +237,8 @@ class SqliteDatabase(DatabasePort):
                 int(card.get("approved_count") or 0), int(card.get("rejected_count") or 0),
                 int(card.get("trigger_count") or 0), card.get("scene_tag"),
                 card.get("namespace"), float(card.get("created_at") or 0), float(card.get("updated_at") or 0),
+                json.dumps(card.get("pitfalls") or [], ensure_ascii=False),
+                json.dumps(card.get("experience_notes") or [], ensure_ascii=False),
             ))
             conn.commit()
 

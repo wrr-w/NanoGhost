@@ -323,6 +323,81 @@ def _cmd_instance_create(args) -> int:
     return 0
 
 
+def _cmd_instance_show(args) -> int:
+    root = _instances_root()
+    name = str(args.name).strip()
+    inst = (root / name).resolve()
+    if not inst.exists():
+        print(json.dumps({"ok": False, "error": "instance not found", "name": name}, ensure_ascii=False))
+        return 1
+
+    # load .env for accurate env display
+    from dotenv import load_dotenv
+    inst_env = inst / ".env"
+    if inst_env.is_file():
+        load_dotenv(inst_env, override=True)
+    load_dotenv(override=False)  # root .env as fallback
+
+    out: dict = {"ok": True, "name": name, "path": str(inst)}
+
+    # channel config
+    ch_path = inst / "channel_directory.json"
+    if ch_path.exists():
+        out["channel_config"] = _read_json(ch_path)
+
+    # runtime (gateway + workers)
+    rt_dir = inst / "runtime"
+    if rt_dir.is_dir():
+        out["runtime"] = {}
+        for f in sorted(rt_dir.iterdir()):
+            if f.suffix == ".json":
+                out["runtime"][f.stem] = _read_json(f)
+
+    # env check
+    env_info: dict = {}
+    for k in ("FEISHU_APP_ID", "FEISHU_APP_SECRET", "AGENT_MODE", "NO_PROXY"):
+        v = os.environ.get(k, "")
+        if k == "FEISHU_APP_SECRET":
+            env_info[k] = "***set***" if v else "(not set)"
+        else:
+            env_info[k] = v or "(not set)"
+    out["env"] = env_info
+
+    # dirs
+    out["dirs"] = {}
+    for d in ("data", "work", "prompts", "skills"):
+        p = inst / d
+        out["dirs"][d] = {"exists": p.is_dir(), "path": str(p)}
+
+    # prompts
+    prompts_dir = inst / "prompts"
+    if prompts_dir.is_dir():
+        prompts = sorted(f.name for f in prompts_dir.iterdir() if f.is_file())
+        out["prompts"] = prompts
+
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _cmd_instance_set_channel(args) -> int:
+    root = _instances_root()
+    name = str(args.name).strip()
+    channel = str(args.channel).strip()
+    enabled = str(args.enabled).lower() in ("1", "true", "yes", "on")
+    inst = (root / name).resolve()
+    if not inst.exists():
+        print(json.dumps({"ok": False, "error": "instance not found", "name": name}, ensure_ascii=False))
+        return 1
+    ch_path = inst / "channel_directory.json"
+    cfg = _read_json(ch_path) if ch_path.exists() else {"updated_at": None, "channels": {}}
+    cfg.setdefault("channels", {})
+    cfg["channels"][channel] = {"enabled": enabled}
+    cfg["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    _atomic_write_json(ch_path, cfg)
+    print(json.dumps({"ok": True, "name": name, "channel": channel, "enabled": enabled, "path": str(ch_path)}, ensure_ascii=False))
+    return 0
+
+
 def _cmd_instance_path(args) -> int:
     root = _instances_root()
     p = (root / str(args.name)).resolve()
@@ -441,6 +516,16 @@ def main(argv: list[str] | None = None) -> int:
     inst_path = inst_sub.add_parser("path", help="resolve instance name to absolute path")
     inst_path.add_argument("name", help="instance name")
     inst_path.set_defaults(func=_cmd_instance_path)
+
+    inst_show = inst_sub.add_parser("show", help="show full instance configuration (channels, runtime, env, dirs)")
+    inst_show.add_argument("name", help="instance name")
+    inst_show.set_defaults(func=_cmd_instance_show)
+
+    inst_set_ch = inst_sub.add_parser("set-channel", help="enable/disable a channel for an instance")
+    inst_set_ch.add_argument("name", help="instance name")
+    inst_set_ch.add_argument("channel", help="channel name (e.g. feishu)")
+    inst_set_ch.add_argument("enabled", help="1/0, true/false, yes/no")
+    inst_set_ch.set_defaults(func=_cmd_instance_set_channel)
 
     gw = sub.add_parser("gateway", help="daemon process that manages Feishu worker lifecycle")
     gw_sub = gw.add_subparsers(dest="gw_cmd")

@@ -404,6 +404,10 @@ _NANO = r"""
 """
 
 
+def _log(msg: str) -> None:
+    print(f"  [{time.strftime('%H:%M:%S')}] {msg}")
+
+
 def _banner(host: str, port: int, instance_dir: Path) -> str:
     inst_name = instance_dir.name
     url = f"http://{host}:{port}"
@@ -417,12 +421,31 @@ def _banner(host: str, port: int, instance_dir: Path) -> str:
 """
 
 
+def _auto_start_workers(state: GatewayState) -> None:
+    cfg = load_channel_config(state.instance_dir)
+    ch = cfg.get("channels", {}) if isinstance(cfg.get("channels"), dict) else {}
+    for name, channel_cfg in ch.items():
+        if not isinstance(channel_cfg, dict):
+            continue
+        enabled = bool(channel_cfg.get("enabled"))
+        reg = CHANNEL_REGISTRY.get(name, {})
+        wk = reg.get("worker_key")
+        if wk and enabled:
+            r = state.workers.start_worker(wk, env_overrides={"AGENT_MODE": wk})
+            _log(f"[Gateway] auto-start {wk}: ok={r.get('ok')} pid={r.get('pid')}")
+        elif wk:
+            has_creds = bool(os.environ.get(f"{name.upper()}_APP_ID", "").strip())
+            hint = f" (env has {name.upper()}_APP_ID set, run: nanoghost instance set-channel {state.instance_dir.name} {name} true)" if has_creds else ""
+            _log(f"[Gateway] channel '{name}' disabled in channel_directory.json, skip{hint}")
+
+
 def serve_gateway(*, host: str, port: int, instance_dir: Path) -> None:
     print(_banner(host, port, instance_dir))
     print(f"  NanoGhost gateway starting on {host}:{port}...\n")
     httpd = ThreadingHTTPServer((host, int(port)), GatewayHandler)
     setattr(httpd, "state", GatewayState(instance_dir))
     _install_signal_handlers(httpd)
+    _auto_start_workers(httpd.state)
     try:
         httpd.serve_forever()
     finally:

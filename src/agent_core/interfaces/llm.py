@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Iterator, Optional
 class LLMResponse:
     """LLM chat response that may contain text content and/or tool calls."""
     content: Optional[str] = None
+    reasoning_content: Optional[str] = None
+    """DeepSeek thinking mode reasoning content. Must be passed back on subsequent calls."""
     tool_calls: Optional[List[Any]] = None
     """List of ToolCall objects (from agent_core.tool.models) or None."""
 
