@@ -89,6 +89,10 @@ def load_yaml_subset(path: Union[str, Path]) -> Dict[str, Any]:
                     continue
 
             if ":" in item_raw:
+                is_win_path = len(item_raw) > 2 and item_raw[1] == ":" and item_raw[2] in ("\\", "/")
+                if is_win_path:
+                    parent.append(_parse_scalar(item_raw))
+                    continue
                 k, _, v = item_raw.partition(":")
                 k = k.strip()
                 v = v.strip()
