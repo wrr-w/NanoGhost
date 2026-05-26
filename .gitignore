@@ -22,3 +22,15 @@ build/
 
 .DS_Store
 Thumbs.db
+
+# Temp / debug files
+_tmp_*.txt
+_cards_*.txt
+_chunk_*.txt
+err.txt
+
+# Logs
+*.log
+
+# Instance data (per-machine)
+instances/*/data/
