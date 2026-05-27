@@ -23,6 +23,7 @@ from agent_core.channel.base import ChannelPort
 from .api import (
     add_reaction_to_message,
     download_message_resource,
+    extract_file_info_from_event_message,
     extract_image_keys_from_event_message,
     extract_text_from_event_message,
     send_images_base64_to_chat,
@@ -196,9 +197,47 @@ class FeishuWSClient(ChannelPort):
                 self._cache_image_keys(chat_id, message_id, keys)
             return
 
-        text = extract_text_from_event_message(message)
-        if not text:
-            return
+        if message_type == "file":
+            file_info = extract_file_info_from_event_message(message)
+            if file_info and message_id:
+                file_key = file_info["file_key"]
+                file_name = file_info["file_name"]
+                logger.info(f"[Feishu WS] 收到文件 chat_id={chat_id} file_name={file_name}")
+
+                dl_result = download_message_resource(message_id, file_key, resource_type="file")
+                if dl_result:
+                    file_bytes, content_type = dl_result
+                    ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
+                    text_exts = {
+                        "md", "txt", "py", "json", "yaml", "yml",
+                        "toml", "ini", "cfg", "conf", "log", "csv",
+                        "xml", "html", "css", "js", "ts", "sh", "bat",
+                        "ps1", "sql", "r", "go", "rs", "java", "c",
+                        "cpp", "h", "hpp", "lua", "rb", "php",
+                    }
+                    if ext in text_exts:
+                        try:
+                            file_text = file_bytes.decode("utf-8")
+                            text = '用户发送了一个文件 **' + file_name + '**，内容如下：\n\n```\n' + file_text + '\n```\n\n请仔细阅读并理解上述文件内容，根据文件内容给用户一个有价值的回复。不要只说"已收到"或"已执行完成"。'
+                        except UnicodeDecodeError:
+                            text = (
+                                f"用户发送了一个文件 **{file_name}**"
+                                f"（无法解码为文本，大小 {len(file_bytes):,} 字节）。"
+                            )
+                    else:
+                        text = (
+                            f"用户发送了一个文件 **{file_name}**"
+                            f"（大小 {len(file_bytes):,} 字节）。"
+                        )
+                else:
+                    text = f"用户发送了一个文件 **{file_name}**，但下载失败。"
+            else:
+                return
+
+        if message_type != "file":
+            text = extract_text_from_event_message(message)
+            if not text:
+                return
 
         if chat_type == "group":
             mentions = message.get("mentions") or []

@@ -290,3 +290,25 @@ def extract_image_keys_from_event_message(message: Dict[str, Any]) -> List[str]:
         return [keys] if keys else []
     except (json.JSONDecodeError, ValueError):
         return []
+
+
+def extract_file_info_from_event_message(message: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    """从飞书事件消息中提取文件信息 (file_key, file_name)。
+
+    文件消息的 message_type='file', content 格式:
+        {"file_key": "xxx", "file_name": "xxx.md"}
+
+    返回 {"file_key": "...", "file_name": "..."} 或 None
+    """
+    content_str = (message.get("content") or "").strip()
+    if not content_str:
+        return None
+    try:
+        content = json.loads(content_str)
+        file_key = (content.get("file_key") or "").strip()
+        file_name = (content.get("file_name") or "").strip()
+        if file_key:
+            return {"file_key": file_key, "file_name": file_name or "unknown_file"}
+        return None
+    except (json.JSONDecodeError, ValueError):
+        return None

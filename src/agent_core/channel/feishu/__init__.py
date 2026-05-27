@@ -5,6 +5,7 @@ from .api import (
     download_message_resource,
     extract_text_from_event_message,
     extract_image_keys_from_event_message,
+    extract_file_info_from_event_message,
 )
 from .ws_client import FeishuWSClient
 
@@ -16,4 +17,5 @@ __all__ = [
     "download_message_resource",
     "extract_text_from_event_message",
     "extract_image_keys_from_event_message",
+    "extract_file_info_from_event_message",
 ]
