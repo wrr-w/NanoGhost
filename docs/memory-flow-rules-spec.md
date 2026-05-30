@@ -38,56 +38,28 @@ LLM 的角色只是**内容生成器**，不是**决策者**。
    └─ update_graph_from_steps() → 写 Graph
 ```
 
-### Phase 2: Card Pitfall 判断 (新增)
+### Phase 2: Card 经验总结
+
+每次 flow 完成后（有 tool calls、有回复），调一次 LLM 生成经验文本。
+不做步骤级失败检测，不做 pitfall 概念。
 
 ```
-[Card 写入后]
-   ├─ 遍历 steps
-   │   └─ 步骤 i:
-   │       ├─ step[i].ok == False?
-   │       │   ├─ YES → step[i+1].ok == True?
-   │       │   │   ├─ YES → step[i].method/path == step[i+1].method/path?
-   │       │   │   │   ├─ YES → 重试成功模式
-   │       │   │   │   │       → 生成 pitfall 文本 (不调 LLM，固定模板)
-   │       │   │   │   │       → card.pitfalls.append(...)
-   │       │   │   │   └─ NO  → 错误后用其他方式解决
-   │       │   │   │           → 生成 pitfall 文本 (不调 LLM，固定模板)
-   │       │   │   │           → card.pitfalls.append(...)
-   │       │   │   └─ NO  → 步骤失败未恢复 → 跳过 (不记)
-   │       │   └─ NO → step[i].ok == True，继续下一个
-   │       │
-   │       └─ step[i].ok == False?
-   │           ├─ YES → 检查 result_preview 中是否有已知错误模式
-   │           │   ├─ YES → 映射到预定义的错误类别
-   │           │   │       → 生成 pitfall 文本 (不调 LLM，查表)
-   │           │   │       → card.pitfalls.append(...)
-   │           │   └─ NO  → 跳过
-   │           └─ NO → 跳过
-   │
-   └─ pitfall 去重
-       → 精确匹配已有 pitfalls
-       → 有重复 → 跳过
-       → 无重复 → card.pitfalls.append(...)
+# 输入：intent_summary + steps + reply
+# 输出：一段经验文本
+
+prompt = f"""
+你刚完成了以下任务：
+意图: {intent}
+执行步骤: {steps_summary}
+你的回复: {reply}
+
+请用一段话总结执行该任务的经验，包括注意事项、常见坑、标准操作顺序等。如果这次执行很顺畅没有任何值得记的，请输出"”。
+"""
 ```
 
-### Phase 3: Experience 总结 (需要 LLM)
+### Phase 3: memory.md — Agent 自主写入
 
-```
-[Card 写入后]
-   ├─ card.success_count >= 3?
-   │   ├─ YES → card.success_count % 5 == 0?
-   │   │   ├─ YES → 需要 LLM 生成经验总结
-   │   │   │       → 输入: card.steps + card.intent_summary
-   │   │   │       → LLM 生成: "执行该流程的注意事项"
-   │   │   │       → card.experience_notes.append(LLM 输出)
-   │   │   └─ NO  → 跳过
-   │   └─ NO → 跳过
-```
-
-### Phase 4: memory.md — Agent 自主写入
-
-不做任何内容层自动提取（无正则、无关键词匹配）。
-两个 section 全部由 Agent 通过 memory_write tool 自主写入：
+不做任何内容层自动提取。两个 section 全部由 Agent 通过 memory_write tool 自主写入：
 
 ```
 # 任务完成后
@@ -100,6 +72,13 @@ memory_write(action="append", section="decisions", ...)
 memory_write(action="append", section="decisions", ...)
 ```
 
+### Phase 4: 对照
+
+| 步骤 | 做什么 | LLM 参与 |
+|------|---------|-----------|
+| 1. Card 写入 | 记录 flow_hash + intent + steps | ❌ |
+| 2. 经验总结 | LLM 根据全局信息生成经验 | ✅ 每次 flow 完成 |
+| 3. memory.md | Agent 自主写入 | ✅ Agent 判断 |
 ### Phase 5: 对照
 
 | 层 | 写入方式 | LLM 参与 |

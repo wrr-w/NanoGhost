@@ -4,73 +4,43 @@
 
 ---
 
-## 1. Flow Card 踩坑提取
+## 1. Flow Card — 经验总结
+
+每次 flow 完成后调用，用于生成 card.experience_notes。
 
 ### 触发点
 
-在 agent.py, record_successful_flow() 返回后调用:
+在 agent.py, record_successful_flow() 返回后调用：
 
 ```python
-if all_steps_out:
-    flow_hash = record_successful_flow(...)
-    update_graph_from_steps(...)
-
-    # NEW
-    if flow_hash:
-        enrich_card_with_experience(
-            db=self.db,
-            flow_hash=flow_hash,
-            steps=all_steps_out,
-            reply=reply,
-        )
+if flow_hash:
+    card = load_card_by_hash(db, flow_hash, namespace)
+    experience = llm_summarize_flow(llm, card.intent_summary, card.steps, reply)
+    if experience and experience not in card.experience_notes:
+        card.experience_notes.append(experience)
+    save_card(db, card, namespace)
 ```
 
-### R1: 失败后重试
+### 规则
+
+只有一条规则：
 
 ```
-IF steps[i].ok == False
-   AND steps[i+1].ok == True
-   AND steps[i].method == steps[i+1].method
-   AND steps[i].path == steps[i+1].path
-THEN
-   card.pitfalls.append(
-     "steps{i+1} ({method} {path}) first failed, retry success - may be unstable"
-   )
+FLOW 完成 → LLM 总结经验
+  输入: intent + steps + reply
+
+如果 LLM 输出为空（这次执行很顺畅）→ 不写入
+如果已有相同文本→ 不写入（去重）
+其他情况 → card.experience_notes.append(...)
 ```
 
-### R2: Error 关键词匹配
+### 与旧设计的区别
 
-```
-IF steps[i].ok == False
-   AND "error" / "timeout" / "auth" / "rate" in steps[i].result_preview
-THEN
-   MATCH keyword:
-     "login|auth|token"  -> "may need re-authentication"
-     "timeout"           -> "increase timeout or batch process"
-     "rate|limit|429"    -> "rate limited, add delay between calls"
-     "not found|404"     -> "resource may not exist, query first"
-   card.pitfalls.append("step{step_num}: {suggestion}")
-```
-
-### R3: 多次执行总结
-
-```
-IF card.success_count >= 3
-   AND card.success_count % 5 == 0
-THEN
-   LLM summarize(card.steps) -> card.experience_notes.append(result)
-```
-
-### R4: 去重
-
-```
-IF new_pitfall already in card.pitfalls (exact string match)
-THEN skip
-ELSE card.pitfalls.append(new_pitfall)
-```
-
----
-
+- ❌ 不再有 pitfall 概念
+- ❌ 不做步骤级失败检测
+- ❌ 不再有“累计 5 次才总结”的限制
+- ✅ 每次 flow 完成都调 LLM
+- ✅ LLM 看到全局信息（意图 + 步骤 + 回复）
 ## 2. memory.md — 全部 LLM 自主写入
 
 原则：不做任何内容层自动提取（无正则、无关键词匹配）。

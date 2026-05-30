@@ -182,10 +182,9 @@ ALTER TABLE agent_memory_cards ADD COLUMN l2_code INTEGER DEFAULT 0;
 
 卡片记录：
 - `intent_summary` — 用户意图（语义）
-- `l1_code` — 该流程的主流领域
-- `pitfalls` — 踩坑记录
-- `experience_notes` — 经验总结
-- 不再存完整步骤序列（由图接管）
+- `steps` — 执行步骤序列
+- `experience_notes` — 经验总结（LLM 每次 flow 完成后生成）
+- 没有 pitfall 概念。经验总结本身就覆盖了“注意什么”和“怎么做”
 
 ### 图边表（操作转移）
 
