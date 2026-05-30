@@ -110,20 +110,7 @@ def extract_preference(text):
     return None
 ```
 
-### H2: 错误重试 -> 踩坑
-
-```python
-def extract_retry_pitfall(steps, reply):
-    for i in range(len(steps)-1):
-        a, b = steps[i], steps[i+1]
-        if (not a.get("ok")) and b.get("ok")            and a.get("method") == b.get("method")            and a.get("path") == b.get("path"):
-            cause = extract_first_error_sentence(reply)
-            return {
-                "section": "pitfalls",
-                "content": f"- {a['method']} {a['path']}: {cause}"
-            }
-    return None
-```
+### H2: （已移除 — 操作踩坑归入 Card Phase 2）
 
 ### H3: 路径提取
 
