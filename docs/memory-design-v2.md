@@ -160,6 +160,18 @@ def _extract_key_args(args: dict) -> str:
 
 ## 五、存储模型
 
+### memory.md — 三层存储
+
+| 层 | 内容 | 写入方式 | 是否调 LLM |
+|----|------|---------|-----------|
+| user_info | 称呼、偏好 | 正则提取（H1） | ❌ |
+| daily_log | 每日完成事项、待办 | memory_write tool | ✅ Agent 自主判断 |
+| decisions | 关键结论、设计决策 | memory_write tool | ✅ Agent 自主判断 |
+| project_context | 项目路径 | 命令输出提取（H3） | ❌ |
+| experience | 回复中的建议 | 关键词提取（H4） | ❌ |
+
+核心原则：自动提取的不调 LLM，LLM 写入的不自动提取。daily_log 和 decisions 依赖 Agent 自己在适当时机调用 memory_write 工具，不做强制规则。
+
 ### 卡片表（卡片）
 
 现有 `agent_memory_cards` 表，增加 `l1_code` 字段：

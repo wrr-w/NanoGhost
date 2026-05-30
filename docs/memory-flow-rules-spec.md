@@ -84,39 +84,57 @@ LLM 的角色只是**内容生成器**，不是**决策者**。
    │   └─ NO → 跳过
 ```
 
-### Phase 4: memory.md 写入
+### Phase 4: memory.md 自动提取层
+
+以下为自动提取规则，不调 LLM。
+daily_log 和 decisions 两层由 Agent 通过 memory_write tool 自主写入，不在此处自动提取。
 
 ```
 [Card/Graph 写入后]
    ├─ 检查 user_message
-   │   ├─ 包含"我叫""叫我"等自称结构?
-   │   │   ├─ YES → 提取称呼 → memory.md "user_info" section
-   │   │   │       → 不调 LLM，固定字符串拼接
-   │   │   └─ NO  → 跳过
-   │   └─ 包含"喜欢""不要""倾向"等偏好结构?
-   │       ├─ YES → 提取偏好 → memory.md "preference" section
-   │       │       → 不调 LLM，固定字符串拼接
-   │       └─ NO  → 跳过
-   │
+   │   ├─ 含自称结构（叫我、我是）?
+   │   │   → YES → user_info: 称呼
+   │   └─ 含偏好结构（喜欢、不要、倾向）?
+   │       → YES → preference: 偏好
+   |
    ├─ 检查 reply
-   │   ├─ 包含"建议""推荐""注意"等指导性语言?
-   │   │   ├─ YES → 提取建议文本 → memory.md "experience" section
-   │   │   │       → 不调 LLM，固定提取 reply 中的原文
-   │   │   └─ NO  → 跳过
-   │   └─ 跳过
-   │
-   └─ 检查 steps 中的 EXEC 命令
-       ├─ 命令是 dir/pwd/ls 等路径查询?
-       │   ├─ YES → 输出中包含路径?
-       │   │   ├─ YES → 提取路径 → memory.md "project_context" section
-       │   │   │       → 不调 LLM，正则提取
-       │   │   └─ NO  → 跳过
-       │   └─ NO → 跳过
+   │   └─ 含指导性语言（建议、推荐、注意）?
+   │       → YES → experience: 建议原文
+   |
+   └─ 检查 EXEC 命令输出
+       └─ 含路径（dir/pwd/ls）?
+           → YES → project_context: 路径
 ```
+
+### Phase 5: memory.md LLM 写入层
+
+以下两层不做自动提取，依赖 Agent 自主调用 memory_write tool：
+
+```
+[Agent 判断机会]
+   ├─ 任务完成后：值得记录的事项?
+   │   → YES → memory_write -> daily_log
+   |
+   ├─ 讨论/脑暴中：有关键结论产出?
+   │   → YES → memory_write -> decisions
+   |
+   ├─ 用户指令："记下这个"等
+   │   → YES → memory_write -> 指定 section
+```
+
+### Phase 6: 对照
+
+| 层 | 提取方式 | LLM 参与 |
+|----|---------|-----------|
+| user_info | 自动（正则）| ❌ |
+| daily_log | 自主（memory_write）| ✅ Agent 判断 |
+| decisions | 自主（memory_write）| ✅ Agent 判断 |
+| project_context | 自动（正则）| ❌ |
+| experience | 自动（关键词）| ❌ |
 
 ---
 
-## 三、LLM 只在两个节点介入
+## 三、LLM 参与节点
 
 ```
 节点 A: 经验总结 (Phase 3)
@@ -125,19 +143,20 @@ LLM 的角色只是**内容生成器**，不是**决策者**。
   输出: 一段经验文本 → card.experience_notes
   类型: 内容生成（不是判断）
 
-节点 B: (未来) 记忆维护
+节点 B: memory.md 维护（未来）
   触发: memory.md > 150 行 / 每天一次
   输入: 当前 memory.md 全文
   输出: 精简后的 memory.md
   类型: 内容生成（不是判断）
 ```
 
-**LLM 不做的事：**
+LLM 不做的事：
 - ❌ 判断一条信息该不该记 → 流程规则决定
 - ❌ 判断用户说的是不是偏好 → 检查消息结构决定
 - ❌ 判断步骤有没有失败 → 检查 ok 字段决定
 - ❌ 判断是不是重试 → 检查相邻步骤决定
 - ❌ 判断回复里有没有建议 → 检查关键词决定
+- ❌ 判断"这个值不值得记" → Agent 自主判断
 
 ---
 
@@ -159,12 +178,15 @@ LLM 的角色只是**内容生成器**，不是**决策者**。
    │   ├─ 累计 5 次? → LLM 生成经验总结 → 写入 card
    │   └─ 不到 5 次 → 跳过
    │
-   └─ 4. memory.md
-       ├─ 消息含自称? → 记称呼 (模板)
-       ├─ 消息含偏好? → 记偏好 (模板)
-       ├─ 回复含建议? → 记经验 (原文)
-       ├─ 命令出路径? → 记路径 (提取)
-       └─ 都不满足 → 跳过
+   ├─ 4. memory.md 自动提取
+   │   ├─ 消息含自称? → user_info
+   │   ├─ 消息含偏好? → preference
+   │   ├─ 回复含建议? → experience
+   │   └─ 命令出路径? → project_context
+   │
+   └─ 5. memory.md LLM 写入 (Agent 自主)
+       ├─ memory_write -> daily_log
+       └─ memory_write -> decisions
 ```
 
 ---
@@ -172,10 +194,6 @@ LLM 的角色只是**内容生成器**，不是**决策者**。
 ## 五、实现要点
 
 ```python
-# 这个函数就是所有的"规则"
-# 没有模式匹配，只有流程分支
-# LLM 只在两个 if 分支里被调用
-
 def process_post_turn_memory(user_message, reply, steps, db, llm, namespace):
     """回合结束后的记忆处理 — 流程规则引擎"""
     if not steps:
@@ -191,49 +209,58 @@ def process_post_turn_memory(user_message, reply, steps, db, llm, namespace):
 
     # Phase 2: Pitfall 检测
     for i in range(len(steps) - 1):
-        # 分支节点: 步骤是否失败?
         if not steps[i].get("ok"):
-            # 分支节点: 下一步是否同路径重试成功?
             if steps[i+1].get("ok") and same_endpoint(steps[i], steps[i+1]):
-                text = make_pitfall_text(steps[i])  # 固定模板，不调 LLM
+                text = make_pitfall_text(steps[i])
                 if text not in card.pitfalls:
                     card.pitfalls.append(text)
             else:
-                # 分支节点: 是否有已知错误模式?
-                error_type = match_error_type(steps[i])  # 查表，不调 LLM
+                error_type = match_error_type(steps[i])
                 if error_type:
-                    text = make_pitfall_text(steps[i], error_type)  # 固定模板
+                    text = make_pitfall_text(steps[i], error_type)
                     if text not in card.pitfalls:
                         card.pitfalls.append(text)
 
-    # Phase 3: LLM 经验总结 (LLM 唯一入口)
+    # Phase 3: LLM 经验总结
     if card.success_count >= 3 and card.success_count % 5 == 0:
-        experience = llm_summarize_flow(llm, card)  # LLM 生成内容
+        experience = llm_summarize_flow(llm, card)
         if experience not in card.experience_notes:
             card.experience_notes.append(experience)
 
-    # Phase 4: memory.md
+    # Phase 4: memory.md 自动提取
     entries = []
-    name = extract_self_referral(user_message)  # 字符串判断，不调 LLM
+    name = extract_self_referral(user_message)
     if name:
         entries.append({"section": "user_info", "content": f"- Name: {name}"})
-    pref = extract_preference_keywords(user_message)  # 字符串判断
+    pref = extract_preference_keywords(user_message)
     if pref:
         entries.append({"section": "preference", "content": pref})
-    advice = extract_advice_sentences(reply)  # 字符串判断
+    advice = extract_advice_sentences(reply)
     if advice:
         entries.append({"section": "experience", "content": advice})
-    path = extract_path_from_steps(steps)  # 正则提取
+    path = extract_path_from_steps(steps)
     if path:
         entries.append({"section": "project_context", "content": path})
     if entries:
         append_to_memory_md(entries)
 
     save_card(db, card, namespace)
+    # Phase 5: memory.md LLM 写入 (daily_log, decisions)
+    # 由 Agent 自主调用 memory_write tool，不在此处触发
+
 ```
 
 ---
 
+## 六、memory.md 层级对照
+
+| 层 | 内容 | 写入方式 | LLM 参与 |
+|----|------|---------|-----------|
+| user_info | 称呼、偏好 | 自动提取 | ❌ |
+| daily_log | 每日完成事项 | memory_write | ✅ Agent 判断 |
+| decisions | 关键结论、设计决策 | memory_write | ✅ Agent 判断 |
+| project_context | 项目路径 | 自动提取 | ❌ |
+| experience | 建议原文 | 自动提取 | ❌ |
 ## 六、对照
 
 | 之前错的理解 | 正确的理解 |

@@ -110,7 +110,23 @@ def extract_preference(text):
     return None
 ```
 
-### H2: （已移除 — 操作踩坑归入 Card Phase 2）
+### H2: 日志记录——每日完成事项
+
+由 Agent 自主调用 memory_write tool 记录。不做自动触发规则，不调 LLM 判断。
+
+示例：
+```
+memory_write(action="append", section="daily_log", content="2026-05-30: 修复 YAML 解析器 3 个 bug，切换到 PyYAML")
+```
+
+### H3: 决策记录——关键结论、设计决策
+
+由 Agent 自主调用 memory_write tool 记录。Agent 在参与讨论、脑暴或做出设计决策时，自行判断是否值得记录。不做自动触发规则。
+
+示例：
+```
+memory_write(action="append", section="decisions", content="分类器不依赖生态工具自声明标注")
+```
 
 ### H3: 路径提取
 
