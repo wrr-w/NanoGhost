@@ -84,53 +84,28 @@ LLM 的角色只是**内容生成器**，不是**决策者**。
    │   └─ NO → 跳过
 ```
 
-### Phase 4: memory.md 自动提取层
+### Phase 4: memory.md — Agent 自主写入
 
-以下为自动提取规则，不调 LLM。
-daily_log 和 decisions 两层由 Agent 通过 memory_write tool 自主写入，不在此处自动提取。
-
-```
-[Card/Graph 写入后]
-   ├─ 检查 user_message
-   │   ├─ 含自称结构（叫我、我是）?
-   │   │   → YES → user_info: 称呼
-   │   └─ 含偏好结构（喜欢、不要、倾向）?
-   │       → YES → preference: 偏好
-   |
-   ├─ 检查 reply
-   │   └─ 含指导性语言（建议、推荐、注意）?
-   │       → YES → experience: 建议原文
-   |
-   └─ 检查 EXEC 命令输出
-       └─ 含路径（dir/pwd/ls）?
-           → YES → project_context: 路径
-```
-
-### Phase 5: memory.md LLM 写入层
-
-以下两层不做自动提取，依赖 Agent 自主调用 memory_write tool：
+不做任何内容层自动提取（无正则、无关键词匹配）。
+两个 section 全部由 Agent 通过 memory_write tool 自主写入：
 
 ```
-[Agent 判断机会]
-   ├─ 任务完成后：值得记录的事项?
-   │   → YES → memory_write -> daily_log
-   |
-   ├─ 讨论/脑暴中：有关键结论产出?
-   │   → YES → memory_write -> decisions
-   |
-   ├─ 用户指令："记下这个"等
-   │   → YES → memory_write -> 指定 section
+# 任务完成后
+memory_write(action="append", section="daily_log", ...)
+
+# 讨论/脑暴中有关键结论
+memory_write(action="append", section="decisions", ...)
+
+# 用户说"记下这个"
+memory_write(action="append", section="decisions", ...)
 ```
 
-### Phase 6: 对照
+### Phase 5: 对照
 
-| 层 | 提取方式 | LLM 参与 |
+| 层 | 写入方式 | LLM 参与 |
 |----|---------|-----------|
-| user_info | 自动（正则）| ❌ |
-| daily_log | 自主（memory_write）| ✅ Agent 判断 |
-| decisions | 自主（memory_write）| ✅ Agent 判断 |
-| project_context | 自动（正则）| ❌ |
-| experience | 自动（关键词）| ❌ |
+| daily_log | memory_write tool | ✅ Agent 判断 |
+| decisions | memory_write tool | ✅ Agent 判断 |
 
 ---
 

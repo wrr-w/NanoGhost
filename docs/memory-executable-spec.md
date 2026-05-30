@@ -71,9 +71,22 @@ ELSE card.pitfalls.append(new_pitfall)
 
 ---
 
-## 2. memory.md Hook 提取
+## 2. memory.md — 全部 LLM 自主写入
 
-### 触发点
+原则：不做任何内容层自动提取（无正则、无关键词匹配）。
+两个 section 全部由 Agent 通过 memory_write tool 自主写入：
+
+- `daily_log`: 任务完成后记录“今天做了什么”
+- `decisions`: 讨论/脑暴中记录关键结论、设计决策
+
+```
+# Agent 自主调用示例：
+memory_write(action="append", section="daily_log",
+            content="2026-05-30: 修复 YAML 解析器 3 个 bug")
+memory_write(action="append", section="decisions",
+            content="分类器不依赖生态工具自声明标注")
+```
+## 触发点
 
 ```python
 if all_steps_out:
