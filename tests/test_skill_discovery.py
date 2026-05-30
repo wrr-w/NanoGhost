@@ -1,3 +1,4 @@
+import asyncio
 """Tests for SKILL.md discovery, ecosystem compatibility, and tool calling."""
 
 import os
@@ -385,11 +386,17 @@ def test_agent_use_skill_in_loop():
     config = type("Config", (), {"base_url": "http://localhost", "sys_prompt": "You are a helper.", "api_spec": {}, "skill_extra_dirs": None, "verbose": True})()
     session_id = db.create_agent_session("test-skill")
 
-    events = list(agent.chat_stream_events(
-        user_message="help me with something",
-        session_id=session_id,
-        config=config,
-    ))
+    async def _collect_evs():
+        _evs = []
+        async for _ev in agent.chat_stream_events(
+            user_message="help me with something",
+            session_id=session_id,
+            config=config,
+            ):
+            _evs.append(_ev)
+        return _evs
+
+    events = asyncio.run(_collect_evs())
     event_types = [e[0] for e in events]
     assert "skill_loaded" in event_types
     assert "done" in event_types
@@ -443,11 +450,17 @@ def test_shell_exec_in_agent_loop():
     config = type("Config", (), {"base_url": "http://localhost", "sys_prompt": "You are a helper.", "api_spec": {},         "skill_extra_dirs": None, "shell_timeout": 120, "shell_cwd": None, "verbose": True})()
     session_id = db.create_agent_session("test-shell")
 
-    events = list(agent.chat_stream_events(
-        user_message="run echo command",
-        session_id=session_id,
-        config=config,
-    ))
+    async def _collect_evs():
+        _evs = []
+        async for _ev in agent.chat_stream_events(
+            user_message="run echo command",
+            session_id=session_id,
+            config=config,
+            ):
+            _evs.append(_ev)
+        return _evs
+
+    events = asyncio.run(_collect_evs())
     event_types = [e[0] for e in events]
     assert "step_start" in event_types
     assert "step_done" in event_types
@@ -515,11 +528,17 @@ def test_tool_text_only_is_final():
                                  "shell_timeout": 120, "shell_cwd": None, "verbose": True})()
     session_id = db.create_agent_session("text-done")
 
-    events = list(agent.chat_stream_events(
-        user_message="do something",
-        session_id=session_id,
-        config=config,
-    ))
+    async def _collect_evs():
+        _evs = []
+        async for _ev in agent.chat_stream_events(
+            user_message="do something",
+            session_id=session_id,
+            config=config,
+            ):
+            _evs.append(_ev)
+        return _evs
+
+    events = asyncio.run(_collect_evs())
     event_types = [e[0] for e in events]
     assert "done" in event_types
     done_data = [e[1] for e in events if e[0] == "done"][0]
@@ -545,11 +564,17 @@ def test_tool_new_style_terminal():
                                  "shell_timeout": 120, "shell_cwd": None, "verbose": True})()
     session_id = db.create_agent_session("tool-term")
 
-    events = list(agent.chat_stream_events(
-        user_message="run a command",
-        session_id=session_id,
-        config=config,
-    ))
+    async def _collect_evs():
+        _evs = []
+        async for _ev in agent.chat_stream_events(
+            user_message="run a command",
+            session_id=session_id,
+            config=config,
+            ):
+            _evs.append(_ev)
+        return _evs
+
+    events = asyncio.run(_collect_evs())
     event_types = [e[0] for e in events]
     assert "step_start" in event_types
     assert "step_done" in event_types
@@ -578,11 +603,17 @@ def test_tool_new_style_use_skill():
                                  "shell_timeout": 120, "shell_cwd": None, "verbose": True})()
     session_id = db.create_agent_session("tool-skill")
 
-    events = list(agent.chat_stream_events(
-        user_message="use a skill",
-        session_id=session_id,
-        config=config,
-    ))
+    async def _collect_evs():
+        _evs = []
+        async for _ev in agent.chat_stream_events(
+            user_message="use a skill",
+            session_id=session_id,
+            config=config,
+            ):
+            _evs.append(_ev)
+        return _evs
+
+    events = asyncio.run(_collect_evs())
     event_types = [e[0] for e in events]
     assert "skill_loaded" in event_types
     assert "done" in event_types
@@ -610,9 +641,15 @@ def test_tool_use_skill_template_substitution():
                                  "shell_timeout": 120, "shell_cwd": None, "verbose": True})()
     session_id = db.create_agent_session("template-test")
 
-    events = list(agent.chat_stream_events(
-        user_message="use templated skill", session_id=session_id, config=config,
-    ))
+    async def _collect_evs():
+        _evs = []
+        async for _ev in agent.chat_stream_events(
+            user_message="use templated skill", session_id=session_id, config=config,
+            ):
+            _evs.append(_ev)
+        return _evs
+
+    events = asyncio.run(_collect_evs())
     # Find the tool result — it should contain the substituted path
     tool_results = [e[1] for e in events if e[0] == "tool_result"]
     assert len(tool_results) >= 1, f"No tool_result in events: {[e[0] for e in events]}"
@@ -640,11 +677,17 @@ def test_tool_new_style_skills_list():
                                  "shell_timeout": 120, "shell_cwd": None, "verbose": True})()
     session_id = db.create_agent_session("tool-list")
 
-    events = list(agent.chat_stream_events(
-        user_message="list skills",
-        session_id=session_id,
-        config=config,
-    ))
+    async def _collect_evs():
+        _evs = []
+        async for _ev in agent.chat_stream_events(
+            user_message="list skills",
+            session_id=session_id,
+            config=config,
+            ):
+            _evs.append(_ev)
+        return _evs
+
+    events = asyncio.run(_collect_evs())
     event_types = [e[0] for e in events]
     assert "done" in event_types
     print(f"  [OK] tool-style skills_list flow events: {event_types}")
@@ -707,11 +750,17 @@ def test_tool_mixed_use_skill_and_tool():
                                  "shell_timeout": 120, "shell_cwd": None, "verbose": True})()
     session_id = db.create_agent_session("mixed")
 
-    events = list(agent.chat_stream_events(
-        user_message="do mixed things",
-        session_id=session_id,
-        config=config,
-    ))
+    async def _collect_evs():
+        _evs = []
+        async for _ev in agent.chat_stream_events(
+            user_message="do mixed things",
+            session_id=session_id,
+            config=config,
+            ):
+            _evs.append(_ev)
+        return _evs
+
+    events = asyncio.run(_collect_evs())
     event_types = [e[0] for e in events]
     assert "skill_loaded" in event_types
     assert "step_start" in event_types

@@ -54,8 +54,10 @@ def _as_list(obj: Any) -> List[Any]:
 
 
 def effective_server_ids(instance_dir: Path, global_cfg: Dict[str, Any]) -> List[str]:
-    inst = load_instance_config(instance_dir)
-    mcp = _as_dict(inst.get("mcp"))
+    # 从 YAML 读取 enabled_only，不要用 load_instance_config（返回 dataclass）
+    from agent_core.utils.yaml_subset import load_yaml_subset
+    yaml_data = load_yaml_subset(instance_dir / "config.yaml") or {}
+    mcp = _as_dict(yaml_data.get("mcp"))
     enabled_only = _as_list(mcp.get("enabled_only"))
     enabled_only = [str(x).strip() for x in enabled_only if str(x).strip()]
     if not enabled_only:

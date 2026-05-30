@@ -1,4 +1,5 @@
 import hashlib
+import time
 import math
 import os
 from typing import List, Iterator, Optional
@@ -75,6 +76,7 @@ class OpenAILLM(LLMPort):
         self.client = OpenAI(
             api_key=os.getenv("LLM_API_KEY"),
             base_url=os.getenv("LLM_BASE_URL"),
+            timeout=30,
         )
         self.model = os.getenv("LLM_MODEL") or "gpt-4o"
 
@@ -187,9 +189,16 @@ class OpenAILLM(LLMPort):
                 )
 
         # 本地 embedding
+        _t_local = time.time()
         self._init_local_embed()
+        _t_init = time.time()
+        logger = logging.getLogger("agent_core")
+        logger.info(f"[Embedding] _init_local_embed 耗时={_t_init-_t_local:.3f}s")
         try:
-            return self._local_embed_fn(text)
+            _t_fn = time.time()
+            result = self._local_embed_fn(text)
+            logger.info(f"[Embedding] _local_embed_fn 耗时={time.time()-_t_fn:.3f}s")
+            return result
         except Exception as e:
             logging.getLogger("agent_core").error(f"[Embedding] 本地 embedding 失败: {e}")
             return []

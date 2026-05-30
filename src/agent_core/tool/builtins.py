@@ -432,20 +432,25 @@ def delegate_task(args: Dict[str, Any], ctx: Dict[str, Any]) -> ToolResult:
         })
 
     if run_in_background:
-        import threading
+        import threading as _sub_threading
         _bg_results: Dict[str, Any] = {}
 
         def _run():
+            import asyncio as _sub_asyncio
             try:
-                reply = ""
-                for ev_type, ev_data in sub.chat_stream_events(
-                    user_message=prompt, session_id=None, config=sub_config,
-                ):
-                    if ev_type == "done":
-                        reply = ev_data.get("reply", "")
-                _bg_results["reply"] = reply
+                async def _run_bg():
+                    _reply = ""
+                    async for _ev_type, _ev_data in sub.chat_stream_events(
+                        user_message=prompt, session_id=None, config=sub_config,
+                    ):
+                        if _ev_type == "done":
+                            _reply = _ev_data.get("reply", "")
+                    return _reply
+                _bg_results["reply"] = _sub_asyncio.run(_run_bg())
             except Exception as e:
                 _bg_results["error"] = str(e)
+
+        t = _sub_threading.Thread(target=_run, daemon=True, name=sub_name)
 
         t = threading.Thread(target=_run, daemon=True, name=sub_name)
         t.start()
@@ -454,17 +459,23 @@ def delegate_task(args: Dict[str, Any], ctx: Dict[str, Any]) -> ToolResult:
             signal="__continue__",
         )
 
-    # Synchronous: collect result
-    final_reply = ""
-    for ev_type, ev_data in sub.chat_stream_events(
-        user_message=prompt, session_id=None, config=sub_config,
-    ):
-        if ev_type == "text_stream" and yield_event:
-            yield_event("subagent_text", {
-                "name": sub_name, "content": ev_data.get("content", ""),
-            })
-        elif ev_type == "done":
-            final_reply = ev_data.get("reply", "")
+    # Synchronous: collect result (runs sub-agent async loop in a temporary event loop)
+    import asyncio as _asyncio_for_sub
+
+    async def _run_sub_agent():
+        _reply = ""
+        async for _ev_type, _ev_data in sub.chat_stream_events(
+            user_message=prompt, session_id=None, config=sub_config,
+        ):
+            if _ev_type == "text_stream" and yield_event:
+                yield_event("subagent_text", {
+                    "name": sub_name, "content": _ev_data.get("content", ""),
+                })
+            elif _ev_type == "done":
+                _reply = _ev_data.get("reply", "")
+        return _reply
+
+    final_reply = _asyncio_for_sub.run(_run_sub_agent())
 
     if yield_event:
         yield_event("subagent_result", {
@@ -820,7 +831,8 @@ def register_builtins(registry: Any) -> None:
     """Register all built-in tools into a ToolRegistry instance."""
     # ---- system (always available) ----
     registry.register("terminal", terminal,
-                      description="在本地终端执行 shell 命令。执行代码、运行脚本、访问文件系统时使用。",
+                      description="在本地终端执行 shell 命令。执行代码、运行脚本、访问文件系统时使用。"
+                      " 注意：联网搜索请使用 web-search 技能，不要用 terminal 手写爬虫。",
                       parameters=TERMINAL_DEF, category="system")
     registry.register("read", read_file,
                       description="读取本地文件内容。"

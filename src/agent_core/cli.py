@@ -144,7 +144,16 @@ def _cmd_gateway_start(args) -> int:
     if os.name != "nt":
         popen_kwargs["start_new_session"] = True
     else:
-        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE
+        if os.environ.get("NANOGHOST_CALLER", "").strip().lower() != "openobstrator":
+            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE
+        else:
+            log_dir = inst / "runtime"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = log_dir / "gateway_stdout.log"
+            log_fd = open(log_path, "a", encoding="utf-8")
+            popen_kwargs["stdout"] = log_fd
+            popen_kwargs["stderr"] = subprocess.STDOUT
+            popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
     p = subprocess.Popen(cmd, **popen_kwargs)
     rt = {

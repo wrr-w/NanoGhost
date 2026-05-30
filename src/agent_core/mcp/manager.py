@@ -11,9 +11,10 @@ from agent_core.tool import ToolRegistry, ToolResult
 from .config import MCPServerConfig, load_global_registry, mask_headers, resolve_servers
 from .http_sse import MCPHttpSSEClient
 from .stdio_client import MCPStdioClient
+from pathlib import Path
 
 
-_MCP_TOOL_PREFIX = "mcp."
+_MCP_TOOL_PREFIX = "mcp_"
 
 
 @dataclass
@@ -61,27 +62,50 @@ def _extract_tools(result_obj: Any) -> Dict[str, Dict[str, Any]]:
     return out
 
 
-def _mcp_tool_schema(server_id: str, tool_name: str, tool_obj: Dict[str, Any]) -> Tuple[str, str, Dict[str, Any]]:
-    desc = str(tool_obj.get("description") or "").strip()
-    desc = f"[MCP:{server_id}] {desc}".strip()
+def _build_server_tool_schema(server_id: str, tools: Dict[str, Dict[str, Any]]) -> Tuple[str, str, Dict[str, Any]]:
+    """为整个 MCP 服务器生成一个组合工具 schema。
 
-    inp = tool_obj.get("inputSchema")
-    if isinstance(inp, dict):
-        params = dict(inp)
-        if params.get("type") is None:
-            params["type"] = "object"
-        if not isinstance(params.get("properties"), dict):
-            params["properties"] = {}
-        if not isinstance(params.get("required"), list):
-            params.pop("required", None)
-    else:
-        params = {"type": "object", "properties": {}}
-        if desc:
-            desc = f"{desc} (schema incomplete)"
-        else:
-            desc = f"[MCP:{server_id}] (schema incomplete)"
+    将所有工具折叠为一个工具，通过 action 参数路由。
+    """
+    exposed = f"{_MCP_TOOL_PREFIX}{server_id}"
 
-    exposed = f"{_MCP_TOOL_PREFIX}{server_id}.{tool_name}"
+    # 构建 action enum 和描述
+    actions = []
+    property_schemas = {}
+    for tname, tobj in tools.items():
+        desc = str(tobj.get("description") or "").strip()
+        actions.append({"name": tname, "description": desc})
+
+        # 收集该工具的 inputSchema 作为说明
+        inp = tobj.get("inputSchema")
+        if isinstance(inp, dict):
+            property_schemas[tname] = {
+                "description": desc,
+                "inputSchema": inp,
+            }
+
+    action_names = [a["name"] for a in actions]
+    action_desc = "; ".join(f"{a['name']}: {a['description']}" for a in actions[:5])
+    if len(actions) > 5:
+        action_desc += f"; ... 共 {len(actions)} 个操作"
+
+    params = {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": action_names,
+                "description": f"要执行的操作。可选: {', '.join(action_names)}",
+            },
+            "params": {
+                "type": "object",
+                "description": f"操作参数，具体字段取决于 action 的选择。{action_desc}",
+            },
+        },
+        "required": ["action"],
+    }
+
+    desc = f"[MCP:{server_id}] 调用 {server_id} 服务器的 MCP 工具。通过 action 选择具体操作，params 传入对应参数。"
     return exposed, desc, params
 
 
@@ -104,9 +128,9 @@ class MCPManager:
         with self._lock:
             self._registry = registry
 
-    def _ensure_loaded(self, instance_dir: Path) -> None:
+    def _ensure_loaded(self, instance_dir: Path, force: bool = False) -> None:
         inst_key = str(instance_dir)
-        if inst_key == self._last_loaded_instance and self._servers:
+        if not force and inst_key == self._last_loaded_instance and self._servers:
             return
         servers = resolve_servers(instance_dir)
         self._servers = {s.server_id: s for s in servers}
@@ -125,33 +149,61 @@ class MCPManager:
         reg = self._registry
         if reg is None:
             return
-        prefix = f"{_MCP_TOOL_PREFIX}{server_id}."
-        for name in list(reg.list_tools()):
-            if name.startswith(prefix):
-                reg.unregister(name)
+        exposed = f"{_MCP_TOOL_PREFIX}{server_id}"
+        reg.unregister(exposed)
 
     def _register_server_tools(self, server_id: str, tools: Dict[str, Dict[str, Any]]) -> None:
         reg = self._registry
         if reg is None:
             return
-        for tool_name, tool_obj in tools.items():
-            exposed, desc, params = _mcp_tool_schema(server_id, tool_name, tool_obj)
+        
+        # 读取 action 级白名单，过滤 tools
+        inst = _instance_dir_from_env()
+        if inst is not None:
+            cfg_path = inst / "config.yaml"
+            try:
+                with open(str(cfg_path), encoding="utf-8") as f:
+                    import yaml
+                    cfg = yaml.safe_load(f) or {}
+                mcp_cfg = cfg.get("mcp") or {}
+                action_allowlist = mcp_cfg.get("action_allowlist") or {}
+                allowed = action_allowlist.get(server_id)
+                if allowed is not None and isinstance(allowed, list):
+                    filtered = {}
+                    for aname in allowed:
+                        if aname in tools:
+                            filtered[aname] = tools[aname]
+                    if filtered:
+                        tools = filtered
+                    else:
+                        # 白名单不为空但全被过滤掉了 => 该服务器无可用工具
+                        return
+            except Exception:
+                pass
+        
+        exposed, desc, params = _build_server_tool_schema(server_id, tools)
 
-            def _handler(args: Dict[str, Any], ctx: Dict[str, Any], _sid=server_id, _tn=tool_name) -> ToolResult:
-                ok, data, err, dur = self.call_tool(_sid, _tn, args or {})
-                payload = {
-                    "ok": ok,
-                    "data": data if ok else (data or {}),
-                    "error": None if ok else (err or "mcp tool call failed"),
-                    "meta": {
-                        "server_id": _sid,
-                        "tool_name": _tn,
-                        "duration_ms": int(dur or 0),
-                    },
-                }
-                return ToolResult(ok=ok, data=payload)
+        def _handler(args: Dict[str, Any], ctx: Dict[str, Any], _sid=server_id) -> ToolResult:
+            action = (args.get("action") or "").strip()
+            tool_params = args.get("params") or {}
+            if not action:
+                return ToolResult(ok=False, error=f"缺少 action 参数，可选: {list(tools.keys())}")
+            if action not in tools:
+                return ToolResult(ok=False, error=f"未知 action: {action}，可选: {list(tools.keys())}")
+            ok, data, err, dur = self.call_tool(_sid, action, tool_params)
+            payload = {
+                "ok": ok,
+                "data": data if ok else (data or {}),
+                "error": None if ok else (err or "mcp tool call failed"),
+                "meta": {
+                    "server_id": _sid,
+                    "tool_name": action,
+                    "duration_ms": int(dur or 0),
+                },
+            }
+            return ToolResult(ok=ok, data=payload)
 
-            reg.register(exposed, _handler, description=desc, parameters=params)
+        reg.register(exposed, _handler, description=desc, parameters=params, category="mcp")
 
     def refresh_all(self, instance_dir: Optional[Path] = None) -> None:
         inst = instance_dir or _instance_dir_from_env()
@@ -163,7 +215,7 @@ class MCPManager:
         _log.info(f'[MCP] refresh_all: {inst}')
 
         with self._lock:
-            self._ensure_loaded(inst)
+            self._ensure_loaded(inst, force=True)
             servers = list(self._servers.keys())
 
 
@@ -271,7 +323,10 @@ class MCPManager:
             cache.cooldown_until = now + self._cooldown_seconds
         return False, result, cache.last_error, dur
 
-    def start_poller(self, interval_seconds: int = 60) -> None:
+    def start_poller(self, interval_seconds: int = 86400) -> None:
+        # 环境变量 MCP_REFRESH_INTERVAL 可覆盖（单位秒）
+        import os as _mcp_os
+        interval_seconds = int(_mcp_os.environ.get("MCP_REFRESH_INTERVAL", str(interval_seconds)))
         if self._poller_thread is not None and self._poller_thread.is_alive():
             return
         self._poller_stop.clear()

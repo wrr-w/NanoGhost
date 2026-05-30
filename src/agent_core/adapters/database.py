@@ -65,6 +65,7 @@ class SqliteDatabase(DatabasePort):
                     rejected_count INTEGER DEFAULT 0,
                     trigger_count INTEGER DEFAULT 0,
                     scene_tag TEXT, namespace TEXT,
+                    pitfalls TEXT, experience_notes TEXT,
                     created_at REAL NOT NULL, updated_at REAL NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS agent_memory_edges (
@@ -195,9 +196,14 @@ class SqliteDatabase(DatabasePort):
             for row in rows:
                 r = dict(row)
                 for key, col in [("intent_examples", "intent_examples_json"), ("intent_vector", "intent_vector_json"),
-                                  ("flow_signature", "flow_signature_json"), ("steps", "steps_json")]:
+                                  ("flow_signature", "flow_signature_json"), ("steps", "steps_json"),
+                                  ("pitfalls", "pitfalls"), ("experience_notes", "experience_notes")]:
                     try:
-                        r[key] = json.loads(r.pop(col, "[]"))
+                        val = r.pop(col)
+                        if isinstance(val, str):
+                            r[key] = json.loads(val)
+                        else:
+                            r[key] = val or []
                     except Exception:
                         r[key] = []
                 cards.append(r)

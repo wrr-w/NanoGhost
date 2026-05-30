@@ -78,7 +78,8 @@ class MCPStdioClient:
             "capabilities": {},
             "clientInfo": {"name": "nanoghost", "version": "0.1.0"},
         }
-        return self._send_jsonrpc("initialize", init_params, timeout=timeout)
+        ok, result, err, _dur = self._send_jsonrpc("initialize", init_params, timeout=timeout)
+        return ok, err
 
     def _cleanup(self) -> None:
         proc = self._process

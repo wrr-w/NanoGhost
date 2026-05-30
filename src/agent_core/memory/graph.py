@@ -171,6 +171,12 @@ def update_graph_from_steps(
         to_m, to_p = _normalize_step(b)
         if not _is_valid_node(from_m, from_p) or not _is_valid_node(to_m, to_p):
             continue
+        # 跳过 EXEC 步骤（shell 命令独有性强，没有模式复用价值）
+        if from_m == "EXEC" or to_m == "EXEC":
+            continue
+        # 跳过自环边（source==target 会导致前端 g6 报 Edge already exists）
+        if from_m == to_m and from_p == to_p:
+            continue
         relation = "DEPENDS_ON" if _detect_dependency(b, i + 1) else "FOLLOWS"
         key = EdgeStat.key(from_m, from_p, to_m, to_p)
         edge = edges.get(key)

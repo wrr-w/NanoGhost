@@ -23,9 +23,14 @@ class SkillRegistry:
         if not inst:
             return None
         cfg_path = os.path.join(os.path.abspath(os.path.expanduser(inst)), "config.yaml")
-        cfg = load_yaml_subset(cfg_path)
-        skills = cfg.get("skills") if isinstance(cfg, dict) else {}
-        skills = skills if isinstance(skills, dict) else {}
+        import yaml
+        try:
+            with open(cfg_path, encoding="utf-8") as f:
+                cfg = yaml.safe_load(f)
+        except Exception:
+            cfg = {}
+        cfg = cfg if isinstance(cfg, dict) else {}
+        skills = cfg.get("skills") if isinstance(cfg.get("skills"), dict) else {}
         enabled_only = skills.get("enabled_only")
         enabled_only = enabled_only if isinstance(enabled_only, list) else []
         names = [str(x).strip() for x in enabled_only if str(x).strip()]

@@ -22,9 +22,12 @@ Agent 主类：对象化、多实例、SubAgent 可派生。
         print(ev_type, ev_data)
 """
 
+import asyncio
 import json
 import logging
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+import time
+from typing import Any, Dict, List, Optional, Tuple
+from collections.abc import AsyncIterator
 
 from agent_core.engine.config import AgentConfig
 from agent_core.engine.messages import build_agent_messages_with_history
@@ -37,7 +40,7 @@ from agent_core.tool import ToolRegistry, ToolCall, ToolResult, register_builtin
 
 logger = logging.getLogger("agent_core")
 
-_MAX_ROUNDS = 20
+_MAX_ROUNDS = 120
 
 # 模块级默认 db（兼容简单场景）
 _default_db: Optional[DatabasePort] = None
@@ -214,13 +217,13 @@ class Agent:
 
     # ---- 主循环 ----
 
-    def chat_stream_events(
+    async def chat_stream_events(
         self,
         user_message: str,
         session_id: Optional[str],
         config: AgentConfig,
         images: Optional[List[str]] = None,
-    ) -> Iterable[Tuple[str, Dict[str, Any]]]:
+    ) -> AsyncIterator[Tuple[str, Dict[str, Any]]]:
         """流式 Agent 对话。
 
         Args:
@@ -233,6 +236,7 @@ class Agent:
             (event_type, event_data) 事件对
         """
         final_reply = ""
+        last_text_stream = ""  # 追踪最后一次 LLM 中间文本，循环耗尽时兜底
         step_counter = [0]  # mutable for tool handlers
 
         # ---- 图片入库 ----
@@ -240,9 +244,9 @@ class Agent:
         if session_id and images and self.image_port:
             try:
                 for img_base64 in images:
-                    img_id = self.image_port.add_image(img_base64)
+                    img_id = await asyncio.to_thread(self.image_port.add_image, img_base64)
                     stored_image_ids.append(img_id)
-                    self.db.add_agent_message(session_id, "user", img_id, type="image")
+                    await asyncio.to_thread(self.db.add_agent_message, session_id, "user", img_id, type="image")
             except Exception as e:
                 logger.error(f"[Agent] save user message error: {e}")
 
@@ -251,10 +255,12 @@ class Agent:
 
         # ---- 文本入库 ----
         if session_id and user_message:
-            self.db.add_agent_message(session_id, "user", user_message, type="text")
+            await asyncio.to_thread(self.db.add_agent_message, session_id, "user", user_message, type="text")
 
         # ---- 构建消息 ----
-        messages = build_agent_messages_with_history(
+        _t_messages = time.time()
+        messages = await asyncio.to_thread(
+            build_agent_messages_with_history,
             session_id=session_id,
             sys_prompt=config.sys_prompt,
             user_message=user_message,
@@ -264,9 +270,13 @@ class Agent:
             llm=self.llm,
             namespace=self.namespace,
         )
+        logger.info(f"[Agent] build_agent_messages_with_history 耗时={time.time()-_t_messages:.1f}s")
 
         # ---- 注入 SKILL.md 技能索引（轻量列表，按需加载） ----
+        _t_skill = time.time()
         skill_block = self.skill_registry.build_skill_context()
+        if skill_block:
+            logger.info(f"[Agent] build_skill_context 耗时={time.time()-_t_skill:.1f}s")
         if skill_block:
             messages.append({
                 "role": "system",
@@ -318,12 +328,16 @@ class Agent:
             }
 
             # ---- 调用 LLM（始终传递 tool schemas） ----
+            _t_schemas = time.time()
             tools_schemas = self.tool_registry.get_available_schemas()
+            logger.info(f"[Agent] get_available_schemas 耗时={time.time()-_t_schemas:.1f}s")
             try:
                 for r in self._hook_bus.emit("before_llm_call", messages=messages, config=config):
                     if r is not None:
                         messages = r
-                response = self.llm.chat(messages, temperature=0.1, tools=tools_schemas)
+                _t_llm = time.time()
+                response = await asyncio.to_thread(self.llm.chat, messages, temperature=0.1, tools=tools_schemas)
+                logger.info(f"[Agent] LLM call 耗时={time.time()-_t_llm:.1f}s")
                 for r in self._hook_bus.emit("after_llm_call", response=response, messages=messages):
                     if r is not None:
                         response = r
@@ -339,6 +353,7 @@ class Agent:
 
             # ---- Text-only = final reply ----
             if response.content and not response.has_tool_calls:
+                last_text_stream = response.content.strip()
                 yield ("text_stream", {"content": response.content})
                 reply = response.content.strip() or "已完成。"
                 for r in self._hook_bus.emit("before_response", reply=reply, steps=all_steps_out):
@@ -347,23 +362,37 @@ class Agent:
 
                 if session_id:
                     try:
-                        self.db.add_agent_message(session_id, "assistant", reply)
+                        await asyncio.to_thread(self.db.add_agent_message, session_id, "assistant", reply)
                     except Exception as e:
                         logger.error(f"[Agent] save message error: {e}")
 
-                flow_hash = None
-                if all_steps_out:
-                    try:
-                        flow_hash = record_successful_flow(
-                            user_message, all_steps_out, step_counter[0],
+                # 先回复用户，不阻塞后处理
+                payload: Dict[str, Any] = {
+                    "ok": True,
+                    "reply": reply,
+                    "session_id": session_id,
+                    "steps": all_steps_out,
+                }
+                yield ("done", payload)
+
+                # 后处理（记忆提取、踩坑总结等，不阻塞用户回复）
+                try:
+                    flow_hash = None
+                    if all_steps_out:
+                        intent = await asyncio.to_thread(
+                            _summarize_intent,
+                            self.db, session_id, self.llm, user_message,
+                        )
+                        flow_hash = await asyncio.to_thread(
+                            record_successful_flow,
+                            intent, all_steps_out, step_counter[0],
                             db=self.db, llm=self.llm, namespace=self.namespace,
                         )
-                        update_graph_from_steps(all_steps_out, approved=False, db=self.db, namespace=self.namespace)
+                        await asyncio.to_thread(update_graph_from_steps, all_steps_out, approved=False, db=self.db, namespace=self.namespace)
 
-                        # 踩坑提取 + 经验总结
                         if flow_hash and self.llm:
                             try:
-                                items = self.db.load_all_memory_cards(namespace=self.namespace)
+                                items = await asyncio.to_thread(self.db.load_all_memory_cards, namespace=self.namespace)
                                 card_dict = None
                                 for it in items:
                                     if it.get("flow_hash") == flow_hash:
@@ -372,39 +401,28 @@ class Agent:
                                 if card_dict:
                                     from agent_core.memory.cards import AgentMemoryCard
                                     card = AgentMemoryCard.from_dict(card_dict)
-                                    new_pitfalls = enrich_card_pitfalls(card, all_steps_out, self.llm)
+                                    new_pitfalls = await asyncio.to_thread(enrich_card_pitfalls, card, all_steps_out, self.llm)
                                     if new_pitfalls:
                                         card.pitfalls.extend(new_pitfalls)
-                                    exp = enrich_card_experience(card, self.llm)
+                                    exp = await asyncio.to_thread(enrich_card_experience, card, self.llm)
                                     if exp and exp not in card.experience_notes:
                                         card.experience_notes.append(exp)
                                     if new_pitfalls or exp:
-                                        self.db.save_memory_card(card.to_dict())
+                                        await asyncio.to_thread(self.db.save_memory_card, card.to_dict())
                             except Exception as e2:
                                 logger.error(f"[AgentMemory] enrich error: {e2}")
 
-                        # memory.md 规则提取
                         try:
                             memory_entries = _extract_memory_md_entries(
                                 user_message, reply, all_steps_out
                             )
                             if memory_entries:
-                                _append_to_memory_md(self.db, self.namespace, memory_entries)
+                                await asyncio.to_thread(_append_to_memory_md, self.db, self.namespace, memory_entries)
                         except Exception as e3:
                             logger.error(f"[AgentMemory] memory.md error: {e3}")
 
-                    except Exception as e:
-                        logger.error(f"[AgentMemory] record error: {e}")
-
-                payload: Dict[str, Any] = {
-                    "ok": True,
-                    "reply": reply,
-                    "session_id": session_id,
-                    "steps": all_steps_out,
-                }
-                if flow_hash:
-                    payload["flow_hash"] = flow_hash
-                yield ("done", payload)
+                except Exception as e:
+                    logger.error(f"[AgentMemory] post-process error: {e}")
                 return
 
             # ---- Tool calls ----
@@ -435,7 +453,8 @@ class Agent:
 
                 if session_id:
                     try:
-                        self.db.add_agent_message(
+                        await asyncio.to_thread(
+                            self.db.add_agent_message,
                             session_id, "assistant", json.dumps(assistant_msg, ensure_ascii=False),
                             reasoning_content=response.reasoning_content,
                         )
@@ -443,12 +462,11 @@ class Agent:
                         logger.error(f"[Agent] save message error: {e}")
 
                 for tc in response.tool_calls:
-                    if config.verbose:
-                        yield ("tool_call", {
-                            "name": tc.name,
-                            "arguments": tc.arguments,
-                            "id": tc.id,
-                        })
+                    yield ("tool_call", {
+                        "name": tc.name,
+                        "preview": _arg_preview(tc.arguments),
+                        "id": tc.id,
+                    })
 
                     _blocked = False
                     for _r in self._hook_bus.emit("before_tool_dispatch", name=tc.name, args=tc.arguments, ctx=tool_context):
@@ -459,7 +477,7 @@ class Agent:
                         elif isinstance(_r, dict):
                             tc.arguments = _r
                     if not _blocked:
-                        result = self.tool_registry.dispatch(tc.name, tc.arguments, tool_context)
+                        result = await asyncio.to_thread(self.tool_registry.dispatch, tc.name, tc.arguments, tool_context)
 
                     for _r in self._hook_bus.emit("after_tool_dispatch", name=tc.name, result=result, ctx=tool_context):
                         if _r is not None:
@@ -469,14 +487,11 @@ class Agent:
                         yield ev
                     _pending_events.clear()
 
-                    if config.verbose:
-                        yield ("tool_result", {
-                            "name": tc.name,
-                            "ok": result.ok,
-                            "signal": result.signal,
-                            "summary": result.content_text[:200],
-                            "id": tc.id,
-                        })
+                    yield ("tool_result", {
+                        "name": tc.name,
+                        "ok": result.ok,
+                        "summary": result.content_text[:200] if result.ok else (result.error or "")[:200],
+                    })
 
                     if result.signal == "__ask__":
                         return
@@ -496,7 +511,7 @@ class Agent:
         # ---- Loops exhausted ----
         payload: Dict[str, Any] = {
             "ok": True,
-            "reply": final_reply or "已执行完成。",
+            "reply": final_reply or last_text_stream or "已执行完成。",
             "session_id": session_id,
             "steps": all_steps_out,
         }
@@ -591,3 +606,73 @@ def _append_to_memory_md(db, namespace: str, entries: list[dict]):
 
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
+
+
+
+def _arg_preview(args: dict) -> str:
+    """从工具参数中提取最重要的部分作为进度提示。"""
+    if not args:
+        return ""
+    # 常见查询类参数
+    for key in ("query", "keyword", "question", "command", "path", "name", "skill", "package"):
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            v = val.strip()
+            return v[:60] + ("..." if len(v) > 60 else "")
+    # 取第一个非空字符串参数
+    for v in args.values():
+        if isinstance(v, str) and v.strip():
+            v = v.strip()
+            return v[:60] + ("..." if len(v) > 60 else "")
+    # 没找到合适字段，返回参数名列表
+    keys = list(args.keys())
+    return ", ".join(keys[:3]) + ("..." if len(keys) > 3 else "")
+
+
+def _summarize_intent(
+    db, session_id, llm, current_message: str,
+) -> str:
+    """从会话历史中提取用户真实意图。多轮对话用 LLM 总结，失败则不记录。"""
+    current = (current_message or "").strip()
+    if not current:
+        return ""
+
+    try:
+        history = db.get_agent_messages(session_id) if session_id else []
+    except Exception:
+        history = []
+
+    user_msgs = []
+    seen = set()
+    for msg in history:
+        if isinstance(msg, dict) and msg.get("role") == "user" and msg.get("type") == "text":
+            txt = (msg.get("content") or "").strip()
+            if txt and txt not in seen:
+                seen.add(txt)
+                user_msgs.append(txt)
+
+    prev_msgs = [m for m in user_msgs if m != current]
+    if not prev_msgs:
+        # 单条消息，直接用
+        return current
+
+    # 多轮对话，用 LLM 总结
+    if not llm:
+        return ""  # 没有 LLM 就不记录
+    context_lines = "\n".join(f"- {m[:200]}" for m in prev_msgs[-3:])
+    prompt = (
+        "以下是一个用户与AI助手的对话历史中，用户说过的消息（按时间顺序）：\n"
+        f"{context_lines}\n\n"
+        f"用户最后说：{current}\n\n"
+        "请用一句话总结用户在整个对话中的真实意图/任务需求（20字以内）："
+    )
+    try:
+        resp = llm.chat([{"role": "user", "content": [{"type": "text", "text": prompt}]}])
+        if resp and resp.content:
+            summary = resp.content.strip().strip("\u201c\u201d\u3002")
+            if summary:
+                logger.info(f"[AgentMemory] 意图总结: {summary}")
+                return summary
+    except Exception:
+        pass
+    return ""  # LLM 失败，不记录

@@ -177,7 +177,7 @@ def _execute_one_step(
 def _execute_shell_command(
     command: str,
     step_num: int,
-    timeout: int = 120,
+    timeout: int = 30,
     workdir: Optional[str] = None,
 ) -> Tuple[Dict, bool, Optional[str]]:
     """执行本地 shell 命令。
@@ -193,18 +193,19 @@ def _execute_shell_command(
     """
     logger.info(f"[ShellExec] step {step_num}: {command[:200]}")
 
+    proc = None
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             command,
             shell=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             cwd=workdir or os.getcwd(),
         )
-        ok = result.returncode == 0
-        stdout = result.stdout or ""
-        stderr = result.stderr or ""
+        stdout, stderr = proc.communicate(timeout=timeout)
+        ok = proc.returncode == 0
+        stdout = (stdout or b"").decode("utf-8", errors="replace")
+        stderr = (stderr or b"").decode("utf-8", errors="replace")
 
         preview = ""
         if stdout:
@@ -223,17 +224,30 @@ def _execute_shell_command(
             "method": "EXEC",
             "path": command,
             "ok": ok,
-            "exit_code": result.returncode,
+            "exit_code": proc.returncode,
             "result_preview": preview,
         }
-        return step_out, ok, None if ok else f"exit code {result.returncode}"
+        return step_out, ok, None if ok else f"exit code {proc.returncode}"
 
     except subprocess.TimeoutExpired:
+        if proc is not None:
+            try:
+                proc.kill()
+                if os.name == "nt":
+                    import subprocess as _sp
+                    _sp.run(
+                        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                        capture_output=True, timeout=5,
+                    )
+                proc.wait(timeout=5)
+            except Exception:
+                pass
         return {
             "step": step_num, "method": "EXEC", "path": command,
             "ok": False, "error": f"命令超时（{timeout}秒）",
             "exit_code": -1,
         }, False, f"命令超时（{timeout}秒）"
+
     except FileNotFoundError as e:
         return {
             "step": step_num, "method": "EXEC", "path": command,

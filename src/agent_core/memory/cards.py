@@ -53,6 +53,20 @@ MEMORY_MIN_SIM = 0.4
 MEMORY_MAX_REJECTIONS_BEFORE_DELETE = 3
 
 
+def _safe_list(val):
+    """Defensively convert a value to a list, handling JSON strings."""
+    if val is None:
+        return []
+    if isinstance(val, list):
+        return val
+    if isinstance(val, str):
+        try:
+            parsed = json.loads(val)
+            return list(parsed) if isinstance(parsed, list) else [parsed]
+        except Exception:
+            return [val]
+    return list(val) if hasattr(val, "__iter__") else [val]
+
 @dataclass
 class AgentMemoryCard:
     """记忆卡片统一模型。"""
@@ -98,8 +112,8 @@ class AgentMemoryCard:
             trigger_count=int(data.get("trigger_count") or 0),
             scene_tag=data.get("scene_tag"),
             namespace=data.get("namespace"),
-            pitfalls=list(data.get("pitfalls") or []),
-            experience_notes=list(data.get("experience_notes") or []),
+            pitfalls=_safe_list(data.get("pitfalls")),
+            experience_notes=_safe_list(data.get("experience_notes")),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -273,23 +287,29 @@ def retrieve_similar_flows(
         from agent_core.agent import _get_default_db
         db = _get_default_db()
 
+    _t_db = time.time()
     items = db.load_all_memory_cards(namespace=namespace)
+    logger.info(f"[AgentMemory] load_all_memory_cards 耗时={time.time()-_t_db:.3f}s, count={len(items)}")
     if not items:
         return []
 
+    _t_emb = time.time()
     q_vec = get_embedding(user_intent, llm)
+    logger.info(f"[AgentMemory] get_embedding 耗时={time.time()-_t_emb:.3f}s, len={len(q_vec) if q_vec else 0}")
     if not q_vec:
         return []
 
+    _t_loop = time.time()
     scored: List[Tuple[float, Dict[str, Any]]] = []
     for it in items:
-        card = AgentMemoryCard.from_dict(it)
-        if scene_tag is not None and card.scene_tag and card.scene_tag != scene_tag:
+        _scene_tag = it.get("scene_tag")
+        if scene_tag is not None and _scene_tag and _scene_tag != scene_tag:
             continue
-        v = card.intent_vector or []
+        v = it.get("intent_vector") or []
         sim = cosine(q_vec, v)
-        scored.append((sim, card.to_dict()))
+        scored.append((sim, it))
     scored.sort(key=lambda x: x[0], reverse=True)
+    logger.info(f"[AgentMemory] cosine 循环 耗时={time.time()-_t_loop:.3f}s, items={len(items)}, scored={len(scored)}")
 
     raw_candidates: List[Dict[str, Any]] = []
     for sim, m in scored[: max(top_k * 8, top_k)]:

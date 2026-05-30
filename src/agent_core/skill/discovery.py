@@ -258,8 +258,7 @@ def discover_skills(extra_dirs: Optional[List[str]] = None, force: bool = False)
                 results.append(skill)
                 base_results.append(skill)
                 logger.info(
-                    f"[SkillDiscovery] 发现技能 [{skill.name}]: {skill.description} "
-                    f"({skill.filepath})"
+                    f"[SkillDiscovery] 发现技能 [{skill.name}] ({skill.filepath})"
                 )
 
         _cache[base] = (time.time(), base_results)

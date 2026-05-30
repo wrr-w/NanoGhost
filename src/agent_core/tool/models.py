@@ -44,11 +44,13 @@ class ToolDefinition:
     category: str = "general"
 
     def to_openai_schema(self) -> Dict[str, Any]:
+        cat = self.category or "general"
+        tagged = f"[{cat}] {self.description}"
         return {
             "type": "function",
             "function": {
                 "name": self.name,
-                "description": self.description,
+                "description": tagged,
                 "parameters": self.parameters,
             },
         }

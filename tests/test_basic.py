@@ -1,3 +1,4 @@
+import asyncio
 """Basic smoke tests for agent-core."""
 
 from typing import Any, Dict, List, Iterator, Optional
@@ -127,11 +128,17 @@ def test_agent_chat_stream_events():
     )
     session_id = db.create_agent_session("test")
 
-    events = list(agent.chat_stream_events(
-        user_message="帮我创建一个任务",
-        session_id=session_id,
-        config=config,
-    ))
+    async def _collect():
+        _evs = []
+        async for _ev in agent.chat_stream_events(
+            user_message="帮我创建一个任务",
+            session_id=session_id,
+            config=config,
+        ):
+            _evs.append(_ev)
+        return _evs
+
+    events = asyncio.run(_collect())
 
     event_types = [e[0] for e in events]
     assert "session" in event_types

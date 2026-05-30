@@ -1,4 +1,5 @@
 import json
+import time
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -32,6 +33,7 @@ def build_agent_messages_with_history(
         f"user_message_length={len(user_message)}"
     )
 
+    _t_retrieve = time.time()
     try:
         similar_flows = retrieve_similar_flows(
             user_message, top_k=2, increment_trigger=False,
@@ -40,6 +42,8 @@ def build_agent_messages_with_history(
     except Exception as e:
         logger.error(f"[AgentMemory] retrieve_similar_flows error: {e}")
         similar_flows = []
+
+    logger.info(f"[AgentMemory] retrieve_similar_flows 耗时={time.time()-_t_retrieve:.1f}s, found={len(similar_flows)}")
 
     if similar_flows:
         lines: List[str] = []

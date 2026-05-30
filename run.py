@@ -232,7 +232,18 @@ def run_cli_chat():
     image_port = SqliteImagePort(db)
 
     namespace = _clean_env_value(os.getenv("AGENT_NAMESPACE")) or "cli-agent"
-    agent = Agent(db=db, llm=llm, http=http, image_port=image_port, namespace=namespace)
+    # 从 config.yaml 读取技能搜索目录
+    import os as _sk_os
+    from agent_core.utils.yaml_subset import load_yaml_subset as _sk_load
+    _cfg = _sk_load(_sk_os.path.join(_sk_os.environ.get("INSTANCE_DIR", ""), "config.yaml"))
+    _sk_dirs = _cfg.get("skills", {}).get("extra_dirs", []) if isinstance(_cfg, dict) else []
+    _extra_dirs = []
+    for _d in (_sk_dirs if isinstance(_sk_dirs, list) else []):
+        _p = _sk_os.path.expanduser(str(_d).strip())
+        if _p and _sk_os.path.isdir(_p):
+            _extra_dirs.append(_p)
+    agent = Agent(db=db, llm=llm, http=http, image_port=image_port, namespace=namespace,
+                  skill_extra_dirs=_extra_dirs or None)
     sys_prompt = assemble_sys_prompt()
 
     session_id = db.create_agent_session("CLI 对话")
