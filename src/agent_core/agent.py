@@ -32,8 +32,8 @@ from collections.abc import AsyncIterator
 from agent_core.engine.config import AgentConfig
 from agent_core.engine.messages import build_agent_messages_with_history
 from agent_core.interfaces import DatabasePort, ImagePort, LLMPort, HttpPort, LLMResponse
-from agent_core.memory.cards import record_successful_flow, enrich_card_pitfalls, enrich_card_experience
-from agent_core.memory.graph import update_graph_from_steps
+from agent_core.memory.cards import record_successful_flow, enrich_card_experience
+from agent_core.memory.graph import update_graph_from_steps, update_graph_ml
 from agent_core.engine.hooks import AgentHooks, HookBus
 from agent_core.skill import SkillRegistry, SkillDefinition
 from agent_core.tool import ToolRegistry, ToolCall, ToolResult, register_builtins
@@ -388,7 +388,8 @@ class Agent:
                             intent, all_steps_out, step_counter[0],
                             db=self.db, llm=self.llm, namespace=self.namespace,
                         )
-                        await asyncio.to_thread(update_graph_from_steps, all_steps_out, approved=False, db=self.db, namespace=self.namespace)
+                        await asyncio.to_thread(update_graph_from_steps, all_steps_out, db=self.db, namespace=self.namespace)
+                        await asyncio.to_thread(update_graph_ml, all_steps_out, db=self.db, namespace=self.namespace)
 
                         if flow_hash and self.llm:
                             try:
@@ -401,13 +402,9 @@ class Agent:
                                 if card_dict:
                                     from agent_core.memory.cards import AgentMemoryCard
                                     card = AgentMemoryCard.from_dict(card_dict)
-                                    new_pitfalls = await asyncio.to_thread(enrich_card_pitfalls, card, all_steps_out, self.llm)
-                                    if new_pitfalls:
-                                        card.pitfalls.extend(new_pitfalls)
-                                    exp = await asyncio.to_thread(enrich_card_experience, card, self.llm)
+                                    exp = await asyncio.to_thread(enrich_card_experience, card, reply, self.llm)
                                     if exp and exp not in card.experience_notes:
                                         card.experience_notes.append(exp)
-                                    if new_pitfalls or exp:
                                         await asyncio.to_thread(self.db.save_memory_card, card.to_dict())
                             except Exception as e2:
                                 logger.error(f"[AgentMemory] enrich error: {e2}")

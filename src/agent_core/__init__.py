@@ -39,7 +39,6 @@ from .memory import (
     record_memory_feedback,
     list_flows,
     update_graph_from_steps,
-    suggest_next_nodes,
 )
 from .skill import SkillRegistry, SkillDefinition, discover_skills, load_skill_from_dir
 from .engine.hooks import AgentHooks, HookBus
@@ -73,7 +72,6 @@ __all__ = [
     "record_memory_feedback",
     "list_flows",
     "update_graph_from_steps",
-    "suggest_next_nodes",
     "extract_json_from_llm_response",
     "image2base64",
     "_get_default_db",

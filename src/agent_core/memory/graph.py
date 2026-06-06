@@ -16,9 +16,7 @@ class EdgeStat:
     from_path: str
     to_method: str
     to_path: str
-    relation_type: str = "FOLLOWS"
     total_count: int = 0
-    approved_count: int = 0
     created_at: float = 0.0
     updated_at: float = 0.0
 
@@ -33,9 +31,7 @@ class EdgeStat:
             from_path=data.get("from_path") or "",
             to_method=(data.get("to_method") or "").upper(),
             to_path=data.get("to_path") or "",
-            relation_type=data.get("relation_type") or "FOLLOWS",
             total_count=int(data.get("total_count") or 0),
-            approved_count=int(data.get("approved_count") or 0),
             created_at=float(data.get("created_at") or time.time()),
             updated_at=float(data.get("updated_at") or time.time()),
         )
@@ -63,38 +59,6 @@ def _save_edges(edges: Dict[Tuple[str, str, str, str], EdgeStat], db: DatabasePo
             db.save_memory_edge(edge.to_dict())
     except Exception as e:
         logger.error(f"[AgentFlowGraph] save error: {e}")
-
-
-def _median(values: List[int]) -> float:
-    if not values:
-        return 0.0
-    vs = sorted(int(v) for v in values)
-    n = len(vs)
-    mid = n // 2
-    if n % 2 == 1:
-        return float(vs[mid])
-    return (float(vs[mid - 1]) + float(vs[mid])) / 2.0
-
-
-def _prune_edges(edges: Dict[Tuple[str, str, str, str], EdgeStat]) -> int:
-    if not edges:
-        return 0
-    counts = [int(e.total_count or 0) for e in edges.values()]
-    med = _median(counts)
-    threshold = med * 0.1
-    if threshold <= 0:
-        return 0
-    removed = 0
-    for k in list(edges.keys()):
-        e = edges.get(k)
-        if not e:
-            continue
-        if float(e.total_count or 0) < threshold:
-            edges.pop(k, None)
-            removed += 1
-    if removed:
-        logger.info("[AgentFlowGraph] pruned %s edges (median=%s, threshold=%s)", removed, med, threshold)
-    return removed
 
 
 def _normalize_path_for_graph(path: str) -> str:
@@ -127,36 +91,12 @@ def _is_valid_node(method: str, path: str) -> bool:
     return True
 
 
-def _detect_dependency(step_b: Dict[str, Any], step_a_num: int) -> bool:
-    def _contains_placeholder(obj: Any, target_step: int) -> bool:
-        if isinstance(obj, str):
-            pattern = r"\{\{step" + str(target_step) + r"\.[^}]+\}\}"
-            if re.search(pattern, obj):
-                return True
-        elif isinstance(obj, dict):
-            for v in obj.values():
-                if _contains_placeholder(v, target_step):
-                    return True
-        elif isinstance(obj, list):
-            for item in obj:
-                if _contains_placeholder(item, target_step):
-                    return True
-        return False
-
-    path = step_b.get("path") or ""
-    body = step_b.get("body")
-    if _contains_placeholder(path, step_a_num):
-        return True
-    if body is not None and _contains_placeholder(body, step_a_num):
-        return True
-    return False
-
-
 def update_graph_from_steps(
-    steps: List[Dict[str, Any]], approved: bool,
+    steps: List[Dict[str, Any]],
     db: DatabasePort,
     namespace: Optional[str] = None,
 ) -> None:
+    # v3: only count transitions, no scoring/pruning/relation_type
     if not steps or len(steps) < 2:
         return
 
@@ -171,46 +111,76 @@ def update_graph_from_steps(
         to_m, to_p = _normalize_step(b)
         if not _is_valid_node(from_m, from_p) or not _is_valid_node(to_m, to_p):
             continue
-        # 跳过 EXEC 步骤（shell 命令独有性强，没有模式复用价值）
-        if from_m == "EXEC" or to_m == "EXEC":
-            continue
-        # 跳过自环边（source==target 会导致前端 g6 报 Edge already exists）
         if from_m == to_m and from_p == to_p:
             continue
-        relation = "DEPENDS_ON" if _detect_dependency(b, i + 1) else "FOLLOWS"
         key = EdgeStat.key(from_m, from_p, to_m, to_p)
         edge = edges.get(key)
         if not edge:
             edge = EdgeStat(
                 from_method=from_m, from_path=from_p,
                 to_method=to_m, to_path=to_p,
-                relation_type=relation,
-                total_count=0, approved_count=0,
+                total_count=0,
                 created_at=now, updated_at=now,
             )
-            edge.to_dict()["namespace"] = namespace
             edges[key] = edge
-        else:
-            if relation == "DEPENDS_ON" and edge.relation_type == "FOLLOWS":
-                edge.relation_type = "DEPENDS_ON"
         edge.total_count += 1
-        if approved:
-            edge.approved_count += 1
         edge.updated_at = now
         changed = True
 
     if changed:
-        _prune_edges(edges)
         _save_edges(edges, db)
+def update_graph_ml(
+    steps: List[Dict[str, Any]],
+    db: DatabasePort,
+    namespace: Optional[str] = None,
+) -> None:
+    if not steps or len(steps) < 2:
+        return
+    
+    from agent_core.memory.classifier import classify
+    
+    now = time.time()
+    for i in range(len(steps) - 1):
+        a = steps[i]
+        b = steps[i + 1]
+        method_a = (a.get("method") or "GET").upper()
+        path_a = (a.get("path") or "").strip()
+        tool_a = (a.get("tool_name") or method_a).strip()
+        method_b = (b.get("method") or "GET").upper()
+        path_b = (b.get("path") or "").strip()
+        tool_b = (b.get("tool_name") or method_b).strip()
+        
+        if method_a == method_b and path_a == path_b:
+            continue
+        
+        code_a = classify(method_a, path_a, tool_a)
+        code_b = classify(method_b, path_b, tool_b)
+        
+        for level in [1, 2, 3, 4]:
+            edge = {
+                "level": level,
+                "from_code": code_a.level_code(level),
+                "to_code": code_b.level_code(level),
+                "total_count": 1,
+                "namespace": namespace,
+                "created_at": now,
+                "updated_at": now,
+            }
+            try:
+                db.save_ml_edge(edge)
+            except Exception as e:
+                logger.error(f"[AgentFlowGraph] save_ml_edge error: {e}")
+                return
 
 
-def suggest_next_nodes(
+
+def query_outgoing_edges(
     current_step: Dict[str, Any],
-    top_k: int = 3,
-    relation_filter: Optional[str] = None,
+    top_k: int = 10,
     db: Optional[DatabasePort] = None,
     namespace: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
+    # v3: list all outgoing edges, no scoring/recommendation
     if db is None:
         from agent_core.agent import _get_default_db
         db = _get_default_db()
@@ -223,30 +193,19 @@ def suggest_next_nodes(
         if edge.from_method == method and edge.from_path == path:
             if not _is_valid_node(edge.to_method, edge.to_path):
                 continue
-            if relation_filter and edge.relation_type != relation_filter:
-                continue
             candidates.append(edge)
 
     if not candidates:
         return []
 
-    def _score(e: EdgeStat) -> float:
-        if e.total_count <= 0:
-            return 0.0
-        ratio = e.approved_count / float(e.total_count)
-        relation_boost = 0.05 if e.relation_type == "DEPENDS_ON" else 0.0
-        return ratio + relation_boost + 0.01 * min(e.total_count, 100)
-
-    candidates.sort(key=_score, reverse=True)
+    # Sorted by count ascending so LLM reads the raw numbers
+    candidates.sort(key=lambda e: e.total_count, reverse=True)
 
     out: List[Dict[str, Any]] = []
     for e in candidates[:top_k]:
-        ratio = e.approved_count / float(e.total_count) if e.total_count > 0 else 0.0
         out.append({
             "method": e.to_method,
             "path": e.to_path,
-            "relation_type": e.relation_type,
             "total_count": e.total_count,
-            "approved_ratio": round(ratio, 2),
         })
     return out

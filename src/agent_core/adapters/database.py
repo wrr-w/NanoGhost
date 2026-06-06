@@ -72,12 +72,20 @@ class SqliteDatabase(DatabasePort):
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     from_method TEXT NOT NULL, from_path TEXT NOT NULL,
                     to_method TEXT NOT NULL, to_path TEXT NOT NULL,
-                    relation_type TEXT DEFAULT 'FOLLOWS',
                     total_count INTEGER DEFAULT 0,
-                    approved_count INTEGER DEFAULT 0,
                     namespace TEXT,
                     created_at REAL NOT NULL, updated_at REAL NOT NULL,
                     UNIQUE(from_method, from_path, to_method, to_path, namespace)
+                );
+                CREATE TABLE IF NOT EXISTS agent_edges_ml (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    level INTEGER NOT NULL,
+                    from_code INTEGER NOT NULL,
+                    to_code INTEGER NOT NULL,
+                    total_count INTEGER DEFAULT 0,
+                    namespace TEXT,
+                    created_at REAL NOT NULL, updated_at REAL NOT NULL,
+                    UNIQUE(level, from_code, to_code, namespace)
                 );
                 CREATE INDEX IF NOT EXISTS idx_agent_messages_session
                     ON agent_messages(session_id);
@@ -197,7 +205,7 @@ class SqliteDatabase(DatabasePort):
                 r = dict(row)
                 for key, col in [("intent_examples", "intent_examples_json"), ("intent_vector", "intent_vector_json"),
                                   ("flow_signature", "flow_signature_json"), ("steps", "steps_json"),
-                                  ("pitfalls", "pitfalls"), ("experience_notes", "experience_notes")]:
+                                  ("experience_notes", "experience_notes")]:
                     try:
                         val = r.pop(col)
                         if isinstance(val, str):
@@ -216,8 +224,8 @@ class SqliteDatabase(DatabasePort):
                     intent_vector_json, flow_signature_json, steps_json,
                     success_count, total_rounds, approved_count, rejected_count,
                     trigger_count, scene_tag, namespace, created_at, updated_at,
-                    pitfalls, experience_notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    experience_notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     intent_summary=excluded.intent_summary,
                     intent_examples_json=excluded.intent_examples_json,
@@ -230,7 +238,6 @@ class SqliteDatabase(DatabasePort):
                     rejected_count=excluded.rejected_count,
                     trigger_count=excluded.trigger_count,
                     namespace=excluded.namespace,
-                    pitfalls=excluded.pitfalls,
                     experience_notes=excluded.experience_notes,
                     updated_at=excluded.updated_at
             """, (
@@ -243,7 +250,6 @@ class SqliteDatabase(DatabasePort):
                 int(card.get("approved_count") or 0), int(card.get("rejected_count") or 0),
                 int(card.get("trigger_count") or 0), card.get("scene_tag"),
                 card.get("namespace"), float(card.get("created_at") or 0), float(card.get("updated_at") or 0),
-                json.dumps(card.get("pitfalls") or [], ensure_ascii=False),
                 json.dumps(card.get("experience_notes") or [], ensure_ascii=False),
             ))
             conn.commit()
@@ -253,6 +259,43 @@ class SqliteDatabase(DatabasePort):
             cur = conn.execute("DELETE FROM agent_memory_cards WHERE id=?", (card_id,))
             conn.commit()
             return cur.rowcount > 0
+
+    def save_ml_edge(self, edge):
+        with self._conn() as conn:
+            conn.execute("""
+                INSERT INTO agent_edges_ml (level, from_code, to_code, total_count, namespace, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(level, from_code, to_code, namespace) DO UPDATE SET
+                    total_count=total_count+excluded.total_count, updated_at=excluded.updated_at
+            """, (
+                int(edge.get("level") or 2),
+                int(edge.get("from_code") or 0),
+                int(edge.get("to_code") or 0),
+                int(edge.get("total_count") or 0),
+                edge.get("namespace"),
+                float(edge.get("created_at") or 0), float(edge.get("updated_at") or 0),
+            ))
+            conn.commit()
+
+    def load_ml_edges(self, level=None, from_code=None, namespace=None):
+        with self._conn() as conn:
+            where = []
+            params = []
+            if level is not None:
+                where.append("level=?")
+                params.append(level)
+            if from_code is not None:
+                where.append("from_code=?")
+                params.append(from_code)
+            if namespace:
+                where.append("namespace=?")
+                params.append(namespace)
+            sql = "SELECT * FROM agent_edges_ml"
+            if where:
+                sql += " WHERE " + " AND ".join(where)
+            sql += " ORDER BY total_count DESC"
+            rows = conn.execute(sql, tuple(params)).fetchall()
+            return [dict(r) for r in rows]
 
     def load_all_memory_edges(self, namespace=None):
         with self._conn() as conn:
@@ -269,16 +312,14 @@ class SqliteDatabase(DatabasePort):
         with self._conn() as conn:
             conn.execute("""
                 INSERT INTO agent_memory_edges (from_method, from_path, to_method, to_path,
-                    relation_type, total_count, approved_count, namespace, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    total_count, namespace, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(from_method, from_path, to_method, to_path, namespace) DO UPDATE SET
-                    relation_type=excluded.relation_type, total_count=excluded.total_count,
-                    approved_count=excluded.approved_count, updated_at=excluded.updated_at
+                    total_count=total_count+excluded.total_count, updated_at=excluded.updated_at
             """, (
                 edge.get("from_method"), edge.get("from_path"),
                 edge.get("to_method"), edge.get("to_path"),
-                edge.get("relation_type") or "FOLLOWS",
-                int(edge.get("total_count") or 0), int(edge.get("approved_count") or 0),
+                int(edge.get("total_count") or 0),
                 edge.get("namespace"),
                 float(edge.get("created_at") or 0), float(edge.get("updated_at") or 0),
             ))

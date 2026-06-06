@@ -107,12 +107,16 @@ def _cmd_gateway_start(args) -> int:
     rt_path = _gateway_runtime_path(inst)
     rt = _read_json(rt_path)
     old_pid = int(rt.get("pid") or 0)
-    if old_pid and pid_exists(old_pid):
+    rt_running = bool(rt.get("running"))
+    if old_pid and pid_exists(old_pid) and rt_running:
         host = (rt.get("host") or args.host or "127.0.0.1").strip()
         port = int(rt.get("port") or 0)
         url = _gateway_url(host, port) if port > 0 else None
         print(json.dumps({"ok": True, "already_running": True, "pid": old_pid, "url": url}, ensure_ascii=False))
         return 0
+    if old_pid and pid_exists(old_pid) and not rt_running:
+        # stale pid in runtime file — try to clean up before starting fresh
+        terminate_pid(old_pid)
 
     host = (args.host or "127.0.0.1").strip()
     port = int(args.port or 0)
@@ -227,11 +231,15 @@ def _cmd_gateway_stop(args) -> int:
             requests.post(_gateway_url(host, port) + "/api/stop", timeout=2)
         except Exception:
             pass
-    terminate_pid(pid)
+    killed = terminate_pid(pid)
     rt["running"] = False
+    rt["pid"] = None
     rt["stopped_at"] = int(time.time())
     _atomic_write_json(rt_path, rt)
-    print(json.dumps({"ok": True, "pid": pid or None}, ensure_ascii=False))
+    if pid and not killed:
+        print(json.dumps({"ok": True, "pid": pid or None, "warning": f"could not terminate pid {pid}, pid field cleared anyway"}, ensure_ascii=False))
+    else:
+        print(json.dumps({"ok": True, "pid": pid or None}, ensure_ascii=False))
     return 0
 
 

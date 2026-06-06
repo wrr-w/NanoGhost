@@ -8,7 +8,7 @@ from agent_core.engine.executor import (
     _fetch_system_status,
     _is_state_related_error,
 )
-from agent_core.memory.graph import suggest_next_nodes
+from agent_core.memory.graph import query_outgoing_edges
 
 logger = logging.getLogger("agent_core")
 
@@ -56,15 +56,12 @@ def _build_step_feedback(
         all_step_results[step_out["step"]] = all_step_results.get(step_out["step"], {})
         obs += _hint_placeholders_for_next_step(all_step_results)
 
-        suggestions = suggest_next_nodes(action, top_k=3, db=db, namespace=namespace)
+        suggestions = query_outgoing_edges(action, top_k=3, db=db, namespace=namespace)
         if suggestions:
             sug_lines = []
             for s in suggestions:
-                rel = s.get("relation_type", "FOLLOWS")
-                rel_label = "数据依赖" if rel == "DEPENDS_ON" else "时序"
                 sug_lines.append(
-                    f"{s['method']} {s['path']} [{rel_label}] "
-                    f"(认可率{s['approved_ratio']})"
+                    f"{s['method']} {s['path']} [count={s['total_count']}]"
                 )
             obs += f"\n\n【推荐下一步】\n" + "\n".join(f"- {l}" for l in sug_lines)
         obs += "\n\n请决定：执行推荐动作、或输出其他动作、或 done:true 结束。"

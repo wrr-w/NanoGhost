@@ -1,6 +1,7 @@
 # Memory Hook 流程规则 SPEC
 
-> 核心: 规则是流程分支，不是文字匹配。LLM 只在「生成内容」时介入，不参与判断。
+> 核心: LLM 只在「生成内容」时介入，不参与判断。
+> Graph 只摆选项，不排序不推荐。
 
 ---
 
@@ -12,11 +13,11 @@
 在 [阶段/环节]
 当 [条件] 发生时
 走 [分支 A 或 B]
-如果分支需要 LLM → 调 LLM 生成内容
-如果不需要 → 直接执行
+如果分支需要 LLM - 调 LLM 生成内容
+如果不需要 - 直接执行
 ```
 
-LLM 的角色只是**内容生成器**，不是**决策者**。
+LLM 的角色只是内容生成器，不是决策者，也不是排序器。
 
 ---
 
@@ -27,21 +28,33 @@ LLM 的角色只是**内容生成器**，不是**决策者**。
 ```
 [对话回合结束]
   条件: LLM 返回了纯文本回复 + 有步骤记录 (all_steps_out 非空)
-  如果条件不满足 → 整个流程跳过
+  如果条件不满足 - 整个流程跳过
 ```
 
-### Phase 1: Card + Graph 写入 (已有逻辑)
+### Phase 1: Card + Graph 写入
 
 ```
 [回合结束]
-   ├─ record_successful_flow() → 写 Card
-   └─ update_graph_from_steps() → 写 Graph
+   |
+   +-- record_successful_flow() -> 写 Card
+   |   (flow_hash + intent + steps + embedding)
+   |
+   +-- update_graph_from_steps() -> 写 Graph
+   |   (从 steps 切相邻对，写 L1~L4 四层)
+   |
+   +-- 等所有步骤结束后
+   |   之前所有步骤的结果已经写入 Card 和 Graph
+   |
+   +-- LLM 总结经验 -> 写 Card.experience_notes
+       (所有 tool call 结束后调一次，LLM 看到完整的
+        intent + steps + reply 来做总结)
 ```
 
 ### Phase 2: Card 经验总结
 
-每次 flow 完成后（有 tool calls、有回复），调一次 LLM 生成经验文本。
-不做步骤级失败检测，不做 pitfall 概念。
+**时机**：所有 tool calls **全部结束**、`record_successful_flow()` 已写入 Card 之后，**调一次** LLM 生成经验文本。
+
+不做步骤级失败检测，不做 pitfall 概念，不逐步骤调 LLM。
 
 ```
 # 输入：intent_summary + steps + reply
@@ -53,11 +66,12 @@ prompt = f"""
 执行步骤: {steps_summary}
 你的回复: {reply}
 
-请用一段话总结执行该任务的经验，包括注意事项、常见坑、标准操作顺序等。如果这次执行很顺畅没有任何值得记的，请输出"”。
+请用一段话总结执行该任务的经验，包括注意事项、常见坑、标准操作顺序等。
+如果这次执行很顺畅没有任何值得记的，请输出"。
 """
 ```
 
-### Phase 3: memory.md — Agent 自主写入
+### Phase 3: memory.md - Agent 自主写入
 
 不做任何内容层自动提取。两个 section 全部由 Agent 通过 memory_write tool 自主写入：
 
@@ -72,76 +86,54 @@ memory_write(action="append", section="decisions", ...)
 memory_write(action="append", section="decisions", ...)
 ```
 
-### Phase 4: 对照
+---
 
-| 步骤 | 做什么 | LLM 参与 |
-|------|---------|-----------|
-| 1. Card 写入 | 记录 flow_hash + intent + steps | ❌ |
-| 2. 经验总结 | LLM 根据全局信息生成经验 | ✅ 每次 flow 完成 |
-| 3. memory.md | Agent 自主写入 | ✅ Agent 判断 |
-### Phase 5: 对照
+## 三、流程总图
 
-| 层 | 写入方式 | LLM 参与 |
-|----|---------|-----------|
-| daily_log | memory_write tool | ✅ Agent 判断 |
-| decisions | memory_write tool | ✅ Agent 判断 |
+```
+回合结束 (有 tool calls)
+   |
+   +-- 1. Card 写入 (record_successful_flow)
+   |   +-- flow_hash + intent + steps 自动写入
+   |
+   +-- 2. Graph 写入 (update_graph_from_steps)
+   |   +-- 遍历 steps 相邻对，classify() -> L1~L4
+   |   +-- 每层 upsert 边，count += 1
+   |
+   +-- 3. LLM 经验总结（每次都调）
+   |   +-- 输入: intent + steps + reply
+   |   +-- 输出: 一段经验文本，或空
+   |   +-- 去重 -> card.experience_notes
+   |
+   +-- 4. memory.md LLM 写入 (Agent 自主)
+       +-- memory_write -> daily_log
+       +-- memory_write -> decisions
+```
 
 ---
 
-## 三、LLM 参与节点
+## 四、LLM 参与节点
 
 ```
-节点 A: 经验总结 (Phase 3)
-  触发: card.success_count >= 3 AND % 5 == 0
-  输入: card.steps + card.intent_summary
-  输出: 一段经验文本 → card.experience_notes
-  类型: 内容生成（不是判断）
+节点 A: 经验总结 (Phase 2)
+  触发: 每次 flow 完成 (有 tool calls + 有回复)
+  输入: intent_summary + steps_summary + reply
+  输出: 一段经验文本 -> card.experience_notes
+  类型: 内容生成
 
-节点 B: memory.md 维护（未来）
-  触发: memory.md > 150 行 / 每天一次
-  输入: 当前 memory.md 全文
-  输出: 精简后的 memory.md
+节点 B: memory.md 维护
+  触发: Agent 自主判断
+  输入: 当前对话上下文
+  输出: daily_log / decisions 内容
   类型: 内容生成（不是判断）
 ```
 
 LLM 不做的事：
-- ❌ 判断一条信息该不该记 → 流程规则决定
-- ❌ 判断用户说的是不是偏好 → 检查消息结构决定
-- ❌ 判断步骤有没有失败 → 检查 ok 字段决定
-- ❌ 判断是不是重试 → 检查相邻步骤决定
-- ❌ 判断回复里有没有建议 → 检查关键词决定
-- ❌ 判断"这个值不值得记" → Agent 自主判断
-
----
-
-## 四、流程总图
-
-```
-回合结束 (有 tool calls)
-   │
-   ├─ 1. Card + Graph 写入 (已有)
-   │
-   ├─ 2. Card Pitfall
-   │   ├─ 遍历 steps
-   │   │   ├─ 失败→重试成功? → 记 pitfall (模板)
-   │   │   ├─ 失败→有已知错误? → 记 pitfall (查表)
-   │   │   └─ 都不满足 → 跳过
-   │   └─ 去重 → 写入 card
-   │
-   ├─ 3. Card Experience
-   │   ├─ 累计 5 次? → LLM 生成经验总结 → 写入 card
-   │   └─ 不到 5 次 → 跳过
-   │
-   ├─ 4. memory.md 自动提取
-   │   ├─ 消息含自称? → user_info
-   │   ├─ 消息含偏好? → preference
-   │   ├─ 回复含建议? → experience
-   │   └─ 命令出路径? → project_context
-   │
-   └─ 5. memory.md LLM 写入 (Agent 自主)
-       ├─ memory_write -> daily_log
-       └─ memory_write -> decisions
-```
+- 判断一条信息该不该记 -> Agent 自主判断
+- 判断步骤有没有失败 -> 由规则检查 ok 字段决定（已取消 pitfall 检测）
+- 判断是不是重试 -> 由规则检查相邻步骤决定（已取消 pitfall 检测）
+- 排序/推荐 Graph 的出边 -> Graph 只摆选项，LLM 用意图自己选
+- 判断这个值不值得记 -> LLM 在经验总结时判断
 
 ---
 
@@ -149,78 +141,36 @@ LLM 不做的事：
 
 ```python
 def process_post_turn_memory(user_message, reply, steps, db, llm, namespace):
-    """回合结束后的记忆处理 — 流程规则引擎"""
     if not steps:
         return  # Phase 0: 无步骤跳过
 
-    # Phase 1: Card + Graph (已有)
+    # Phase 1: Card + Graph 写入
     flow_hash = record_successful_flow(user_message, steps, ..., db=db, namespace=namespace)
-    update_graph_from_steps(steps, ..., db=db, namespace=namespace)
+    update_graph_from_steps(steps, db=db, namespace=namespace)
     if not flow_hash:
         return
 
+    # Phase 2: LLM 经验总结（每次都调）
     card = load_card_by_hash(db, flow_hash, namespace)
-
-    # Phase 2: Pitfall 检测
-    for i in range(len(steps) - 1):
-        if not steps[i].get("ok"):
-            if steps[i+1].get("ok") and same_endpoint(steps[i], steps[i+1]):
-                text = make_pitfall_text(steps[i])
-                if text not in card.pitfalls:
-                    card.pitfalls.append(text)
-            else:
-                error_type = match_error_type(steps[i])
-                if error_type:
-                    text = make_pitfall_text(steps[i], error_type)
-                    if text not in card.pitfalls:
-                        card.pitfalls.append(text)
-
-    # Phase 3: LLM 经验总结
-    if card.success_count >= 3 and card.success_count % 5 == 0:
-        experience = llm_summarize_flow(llm, card)
-        if experience not in card.experience_notes:
-            card.experience_notes.append(experience)
-
-    # Phase 4: memory.md 自动提取
-    entries = []
-    name = extract_self_referral(user_message)
-    if name:
-        entries.append({"section": "user_info", "content": f"- Name: {name}"})
-    pref = extract_preference_keywords(user_message)
-    if pref:
-        entries.append({"section": "preference", "content": pref})
-    advice = extract_advice_sentences(reply)
-    if advice:
-        entries.append({"section": "experience", "content": advice})
-    path = extract_path_from_steps(steps)
-    if path:
-        entries.append({"section": "project_context", "content": path})
-    if entries:
-        append_to_memory_md(entries)
-
+    experience = llm_summarize_flow(llm, card.intent_summary, card.steps, reply)
+    if experience and experience not in card.experience_notes:
+        card.experience_notes.append(experience)
     save_card(db, card, namespace)
-    # Phase 5: memory.md LLM 写入 (daily_log, decisions)
-    # 由 Agent 自主调用 memory_write tool，不在此处触发
 
+    # Phase 3: memory.md
+    # 由 Agent 自主调用 memory_write tool，不在此处自动触发
 ```
 
 ---
 
-## 六、memory.md 层级对照
+## 六、对照（设计变更记录）
 
-| 层 | 内容 | 写入方式 | LLM 参与 |
-|----|------|---------|-----------|
-| user_info | 称呼、偏好 | 自动提取 | ❌ |
-| daily_log | 每日完成事项 | memory_write | ✅ Agent 判断 |
-| decisions | 关键结论、设计决策 | memory_write | ✅ Agent 判断 |
-| project_context | 项目路径 | 自动提取 | ❌ |
-| experience | 建议原文 | 自动提取 | ❌ |
-## 六、对照
-
-| 之前错的理解 | 正确的理解 |
-|---|---|
-| 规则 = 正则匹配文字 | 规则 = 流程节点上的分支 |
-| LLM 判断信息价值 | LLM 不判断，流程决定 |
-| LLM 提取偏好语义 | 检查消息结构，不调 LLM |
-| 多层路由架构 | 一条直线流程，遇到分支走条件 |
-| LLM 每轮都可能调 | LLM 只在 5 次阈值时调 |
+| 旧设计 | 新设计 |
+|--------|--------|
+| Graph 有评分排序逻辑 | Graph 只摆选项，不排序 |
+| Graph 有剪枝 | Graph 保留所有边 |
+| Graph 有 approved_count | 删除，只用 total_count |
+| 有 pitfall 概念 | 删除，合并到 experience |
+| experience 每 5 次总结一次 | 每次 flow 完成都总结 |
+| memory.md 有自动提取 | 全部由 Agent 自主写入 |
+| Card 和 Graph 代码上无关 | Card.steps 是 Graph 唯一数据源 |

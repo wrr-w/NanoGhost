@@ -69,7 +69,7 @@ def _bootstrap_instance(argv: List[str]) -> None:
     os.environ.setdefault("AGENT_DB_PATH", os.path.join(instance_dir, "data", "agent_data.db"))
     os.environ.setdefault("AGENT_PROMPTS_DIR", os.path.join(instance_dir, "prompts"))
     os.environ.setdefault("AGENT_WORKDIR", os.path.join(instance_dir, "work"))
-    os.environ.setdefault("AGENTS_SKILLS_DIR", os.path.join(instance_dir, "skills"))
+    # skills 目录由 config.yaml 的 skills.dirs/extra_dirs 控制，不再设置 AGENTS_SKILLS_DIR
     os.environ.setdefault("AGENT_NAMESPACE", os.path.basename(instance_dir.rstrip("\\/")) or "agent")
 
     dotenv_path = os.path.join(instance_dir, ".env")
@@ -232,16 +232,49 @@ def run_cli_chat():
     image_port = SqliteImagePort(db)
 
     namespace = _clean_env_value(os.getenv("AGENT_NAMESPACE")) or "cli-agent"
-    # 从 config.yaml 读取技能搜索目录
+    # 从 config.yaml 读取技能搜索目录配置
     import os as _sk_os
     from agent_core.utils.yaml_subset import load_yaml_subset as _sk_load
     _cfg = _sk_load(_sk_os.path.join(_sk_os.environ.get("INSTANCE_DIR", ""), "config.yaml"))
-    _sk_dirs = _cfg.get("skills", {}).get("extra_dirs", []) if isinstance(_cfg, dict) else []
+    _sk_cfg = _cfg.get("skills", {}) if isinstance(_cfg, dict) else {}
+    _inst_dir = _sk_os.environ.get("INSTANCE_DIR", "")
     _extra_dirs = []
-    for _d in (_sk_dirs if isinstance(_sk_dirs, list) else []):
-        _p = _sk_os.path.expanduser(str(_d).strip())
-        if _p and _sk_os.path.isdir(_p):
-            _extra_dirs.append(_p)
+    # skills.dirs: 完全控制技能目录列表
+    _sk_dirs = _sk_cfg.get("dirs")
+    if isinstance(_sk_dirs, list) and _sk_dirs:
+        for _d in _sk_dirs:
+            _p = str(_d).strip()
+            if _p.startswith("./") or _p.startswith(".\\"):
+                _p = _sk_os.path.join(_inst_dir, _p[2:])
+            elif _p == ".":
+                _p = _inst_dir
+            else:
+                _p = _sk_os.path.expanduser(_p)
+            if _p and _sk_os.path.isdir(_p):
+                _extra_dirs.append(_p)
+        # 当配置了 dirs 时，不设置 AGENTS_SKILLS_DIR 环境变量（让 discovery.py 用 ~/.agents/skills 兜底）
+        if "AGENTS_SKILLS_DIR" in _sk_os.environ:
+            del _sk_os.environ["AGENTS_SKILLS_DIR"]
+    else:
+        # 向后兼容：使用 extra_dirs
+        _sk_extra = _sk_cfg.get("extra_dirs", [])
+        if isinstance(_sk_extra, list):
+            for _d in _sk_extra:
+                _p = str(_d).strip()
+                if _p.startswith("./") or _p.startswith(".\\"):
+                    _p = _sk_os.path.join(_inst_dir, _p[2:])
+                elif _p == ".":
+                    _p = _inst_dir
+                else:
+                    _p = _sk_os.path.expanduser(_p)
+                if _p and _sk_os.path.isdir(_p):
+                    _extra_dirs.append(_p)
+        # 默认兜底：使用 instance/skills
+        if not _extra_dirs:
+            _inst_skills = _sk_os.path.join(_inst_dir, "skills")
+            if _sk_os.path.isdir(_inst_skills):
+                _extra_dirs.append(_inst_skills)
+
     agent = Agent(db=db, llm=llm, http=http, image_port=image_port, namespace=namespace,
                   skill_extra_dirs=_extra_dirs or None)
     sys_prompt = assemble_sys_prompt()
@@ -467,7 +500,6 @@ if __name__ == "__main__":
     elif args.list_skills:
         # 快速列出技能
         from agent_core.skill.discovery import discover_skills
-        from agent_core.skill.discovery import SEARCH_DIRS
         skills = discover_skills()
         if not skills:
             print(f"  {Style.dim('(无可用技能)')}")
