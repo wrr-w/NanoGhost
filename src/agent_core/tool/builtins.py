@@ -34,13 +34,14 @@ import os
 
 import re
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
+
+import subprocess
 
 
-
-from agent_core.engine.config import AgentConfig
-
+from agent_core.config import AgentConfig
 from agent_core.engine.executor import _execute_shell_command
+
 
 from .models import ToolResult
 
@@ -54,98 +55,50 @@ logger = logging.getLogger("agent_core")
 
 # ---------------------------------------------------------------------------
 
-# terminal — shell command execution
-
-# ---------------------------------------------------------------------------
-
-# terminal — shell command execution
-
-# ---------------------------------------------------------------------------
-
 
 
 def terminal(args: Dict[str, Any], ctx: Dict[str, Any]) -> ToolResult:
-
     """Execute a shell command."""
-
     command = args.get("command") or args.get("path") or ""
 
     timeout = args.get("timeout", 120)
-
     workdir = args.get("workdir")
-
     step_counter = ctx["step_counter"]
-
     all_steps_out = ctx["all_steps_out"]
-
     config = ctx.get("config")
 
-
-
     if workdir is None and config:
-
         workdir = getattr(config, "shell_cwd", None)
-
     if timeout == 120 and config:
-
         timeout = getattr(config, "shell_timeout", 120)
 
-
-
     yield_event = ctx.get("yield_event")
-
     if yield_event:
-
         yield_event("step_start", {"step": step_counter[0] + 1, "method": "EXEC", "path": command})
 
-
-
     step_out, ok, error = _execute_shell_command(
-
         command=command,
-
         step_num=step_counter[0] + 1,
-
         timeout=timeout,
-
         workdir=workdir,
-
     )
 
-
-
     step_counter[0] += 1
-
     all_steps_out.append(step_out)
 
-
-
     if yield_event:
-
         result_summary = {
-
             k: v for k, v in step_out.items()
-
             if k in ("ok", "exit_code", "error") and v is not None
-
         }
-
         yield_event("step_done", {
-
             "step": step_counter[0], "ok": ok, "path": command,
-
             "error": error, "result": result_summary,
-
         })
 
-
-
     obs = step_out.get("result_preview") or ""
-
     if error:
-
         obs = f"命令失败: {error}\n{obs}"
-
     obs += "\n\n请决定下一步动作。"
 
     return ToolResult(ok=ok, data=obs, error=error, signal="__continue__")
@@ -903,11 +856,6 @@ def delegate_task(args: Dict[str, Any], ctx: Dict[str, Any]) -> ToolResult:
 
 
         t = _sub_threading.Thread(target=_run, daemon=True, name=sub_name)
-
-
-
-        t = threading.Thread(target=_run, daemon=True, name=sub_name)
-
         t.start()
 
         return ToolResult(
@@ -1663,11 +1611,7 @@ def register_builtins(registry: Any) -> None:
     # ---- system (always available) ----
 
     registry.register("terminal", terminal,
-
-                      description="在本地终端执行 shell 命令。执行代码、运行脚本、访问文件系统时使用。"
-
-                      " 注意：联网搜索请使用 web-search 技能，不要用 terminal 手写爬虫。",
-
+                      description="在本地终端执行 shell 命令。执行代码、运行脚本、访问文件系统时使用。",
                       parameters=TERMINAL_DEF, category="system")
 
     registry.register("read", read_file,

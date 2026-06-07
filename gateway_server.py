@@ -230,14 +230,18 @@ class WorkerManager:
         if proc is not None:
             try:
                 proc.terminate()
+                proc.wait(timeout=3)
             except Exception:
                 pass
-            try:
-                proc.wait(timeout=5)
-            except Exception:
-                pass
+            # 若仍在运行，强制 kill
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=3)
+                except Exception:
+                    pass
             self._procs[worker_key] = None
-        else:
+        if pid and pid_exists(pid):
             terminate_pid(pid)
         rt["running"] = False
         rt["updated_at"] = int(time.time())

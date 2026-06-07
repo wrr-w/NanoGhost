@@ -4,7 +4,7 @@ import asyncio
 from typing import Any, Dict, List, Iterator, Optional
 
 from agent_core import Agent, AgentConfig
-from agent_core.interfaces import DatabasePort, LLMPort, HttpPort
+from agent_core.interfaces import DatabasePort, LLMPort
 
 
 # ---- Mock Ports ----
@@ -35,15 +35,18 @@ class MockDatabase(DatabasePort):
     def delete_agent_session(self, session_id):
         return self.sessions.pop(session_id, None) is not None
 
-    def add_agent_message(self, session_id, role, content, type="text", steps_json=None):
+    def add_agent_message(self, session_id, role, content, type="text", steps_json=None, reasoning_content=None, root_id=None):
         mid = f"msg-{len(self.messages)}"
-        self.messages[mid] = {"session_id": session_id, "role": role, "content": content, "type": type, "steps_json": steps_json}
+        self.messages[mid] = {"session_id": session_id, "role": role, "content": content, "type": type, "steps_json": steps_json, "root_id": root_id}
         if session_id in self.sessions:
             self.sessions[session_id]["messages"] = self.sessions[session_id].get("messages", []) + [mid]
         return mid
 
-    def get_agent_messages(self, session_id):
-        return [v for k, v in self.messages.items() if v["session_id"] == session_id]
+    def get_agent_messages(self, session_id, root_id=None):
+        all_msgs = [v for k, v in self.messages.items() if v["session_id"] == session_id]
+        if root_id:
+            return [m for m in all_msgs if m.get("root_id") == root_id]
+        return [m for m in all_msgs if not m.get("root_id")]
 
     def get_agent_images_batch(self, image_ids):
         return []
@@ -64,14 +67,20 @@ class MockDatabase(DatabasePort):
         self.cards = [c for c in self.cards if c.get("id") != card_id]
         return True
 
-    def load_all_memory_edges(self, namespace=None):
-        if namespace:
-            return [e for e in self.edges if e.get("namespace") == namespace]
-        return self.edges
-
-    def save_memory_edge(self, edge):
+    def save_ml_edge(self, edge):
         pass
 
+    def load_ml_edges(self, level=None, from_code=None, namespace=None):
+        return []
+
+    def load_chat_mentions(self, chat_id):
+        return []
+
+    def save_chat_mention(self, chat_id, name, user_id):
+        pass
+
+    def delete_chat_mentions(self, chat_id):
+        pass
 
 class MockLLM(LLMPort):
     def __init__(self, responses=None):
@@ -87,28 +96,13 @@ class MockLLM(LLMPort):
         return [0.1] * 4  # minimal vector
 
 
-class MockHttp(HttpPort):
-    def __init__(self):
-        self.responses = {}
-
-    def add_response(self, path, status=200, data=None):
-        self.responses[path] = (status, data or {"ok": True})
-
-    def request(self, method, url, body=None, timeout=120):
-        for path, (status, data) in self.responses.items():
-            if path in url:
-                return status, data
-        return 404, {"ok": False, "error": "not found"}
-
-
 # ---- Tests ----
 
 
 def test_agent_instantiation():
     db = MockDatabase()
     llm = MockLLM()
-    http = MockHttp()
-    agent = Agent(db=db, llm=llm, http=http, namespace="test")
+    agent = Agent(db=db, llm=llm, namespace="test")
     assert agent.namespace == "test"
     assert agent.db is db
     assert agent.llm is llm
@@ -118,8 +112,7 @@ def test_agent_instantiation():
 def test_agent_chat_stream_events():
     db = MockDatabase()
     llm = MockLLM(responses=['{"thought": "ok", "done": true, "reply": "任务已创建。"}'])
-    http = MockHttp()
-    agent = Agent(db=db, llm=llm, http=http, namespace="test")
+    agent = Agent(db=db, llm=llm, namespace="test")
 
     config = AgentConfig(
         base_url="http://localhost:8000",
@@ -150,10 +143,9 @@ def test_agent_chat_stream_events():
 def test_namespace_isolation():
     db = MockDatabase()
     llm = MockLLM()
-    http = MockHttp()
 
-    agent_a = Agent(db=db, llm=llm, http=http, namespace="app_a")
-    agent_b = Agent(db=db, llm=llm, http=http, namespace="app_b")
+    agent_a = Agent(db=db, llm=llm, namespace="app_a")
+    agent_b = Agent(db=db, llm=llm, namespace="app_b")
 
     # Record a flow under agent_a's namespace
     from agent_core.memory.cards import record_successful_flow
@@ -177,9 +169,8 @@ def test_namespace_isolation():
 def test_sub_agent():
     db = MockDatabase()
     llm = MockLLM()
-    http = MockHttp()
 
-    parent = Agent(db=db, llm=llm, http=http, namespace="parent")
+    parent = Agent(db=db, llm=llm, namespace="parent")
     child = parent.create_sub_agent("child-1")
 
     assert child.namespace is not None

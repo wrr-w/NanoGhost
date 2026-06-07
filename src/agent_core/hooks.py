@@ -30,14 +30,6 @@ HOOK_EVENTS = frozenset({
 
 # ──────────────────────────────────────────
 # HookBus — 事件驱动的 Hook 总线
-#
-# 用法:
-#   bus = HookBus()
-#   bus.on("before_llm_call", my_fn)
-#   for r in bus.emit("before_llm_call", messages=..., config=...):
-#       ...
-#
-# 每个回调独立 try/except，一个失败不影响其他。
 # ──────────────────────────────────────────
 
 class HookBus:
@@ -50,15 +42,7 @@ class HookBus:
         self._handlers: Dict[str, List[Callable]] = {e: [] for e in HOOK_EVENTS}
 
     def on(self, event: str, fn: Callable) -> None:
-        """注册一个 hook 回调。
-
-        Args:
-            event: 事件名，需在 HOOK_EVENTS 中。
-            fn: 回调函数，接受 emit() 传入的 **kwargs。
-
-        Raises:
-            ValueError: 事件名不在 HOOK_EVENTS 中。
-        """
+        """注册一个 hook 回调。"""
         if event not in HOOK_EVENTS:
             raise ValueError(
                 f"Unknown hook event: {event!r}. "
@@ -68,15 +52,7 @@ class HookBus:
         logger.debug("[HookBus] registered handler for '%s'", event)
 
     def emit(self, event: str, **kwargs) -> List[Any]:
-        """触发指定事件，返回所有非 None 的返回值。
-
-        Args:
-            event: 事件名。
-            **kwargs: 传给每个回调的上下文参数。
-
-        Returns:
-            所有回调的非 None 返回值列表。
-        """
+        """触发指定事件，返回所有非 None 的返回值。"""
         results: List[Any] = []
         for fn in self._handlers.get(event, []):
             try:
@@ -93,20 +69,12 @@ class HookBus:
 
 # ──────────────────────────────────────────
 # AgentHooks — 向后兼容的基类
-#
-# 仍然支持继承 + 覆写方法的方式：
-#   class MyHooks(AgentHooks):
-#       def before_llm_call(self, messages, config):
-#           return messages
-#
-#   agent = Agent(..., hooks=MyHooks())
 # ──────────────────────────────────────────
 
 class AgentHooks:
     """Agent 生命周期钩子（方法驱动，向后兼容）。
 
-    所有方法默认都是空操作（返回 None），
-    只需覆写需要的钩子即可。
+    所有方法默认都是空操作（返回 None），只需覆写需要的钩子即可。
     """
 
     def before_llm_call(self, messages, config):

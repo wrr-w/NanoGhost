@@ -268,7 +268,7 @@ def retrieve_similar_flows(
         return []
 
     if db is None:
-        from agent_core.agent import _get_default_db
+        from agent_core.engine.agent import _get_default_db
         db = _get_default_db()
 
     _t_db = time.time()
@@ -412,7 +412,7 @@ def list_card_index(
     namespace: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     if db is None:
-        from agent_core.agent import _get_default_db
+        from agent_core.engine.agent import _get_default_db
         db = _get_default_db()
     items = db.load_all_memory_cards(namespace=namespace)
     out = []
@@ -436,7 +436,7 @@ def get_card_detail(
     namespace: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     if db is None:
-        from agent_core.agent import _get_default_db
+        from agent_core.engine.agent import _get_default_db
         db = _get_default_db()
     items = db.load_all_memory_cards(namespace=namespace)
     for it in items:

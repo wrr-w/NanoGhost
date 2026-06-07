@@ -7,7 +7,7 @@ from .cards import (
     list_flows,
     enrich_card_experience,
 )
-from .graph import update_graph_from_steps, query_outgoing_edges
+from .graph import update_graph_ml
 
 __all__ = [
     "record_successful_flow",
@@ -17,6 +17,5 @@ __all__ = [
     "enrich_card_experience",
     "list_card_index",
     "get_card_detail",
-    "update_graph_from_steps",
-    "query_outgoing_edges",
+    "update_graph_ml",
 ]

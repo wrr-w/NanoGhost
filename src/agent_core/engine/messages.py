@@ -8,7 +8,64 @@ from agent_core.memory.cards import retrieve_similar_flows
 
 logger = logging.getLogger("agent_core")
 
-_AGENT_HISTORY_MAX_MESSAGES = 20
+
+def _estimate_message_tokens(msg: Dict[str, Any]) -> int:
+    """粗略估算单条 message 的 token 数。
+
+    混合文本按字符数/3估算；图片消息按固定值估算，避免 base64 长度误导。
+    reasoning_content 也计入 token。
+    """
+    total = 0
+
+    # reasoning_content
+    rc = msg.get("reasoning_content")
+    if isinstance(rc, str):
+        total += max(1, len(rc) // 3)
+
+    content = msg.get("content")
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict):
+                ptype = part.get("type", "")
+                if ptype == "image_url":
+                    total += 1000  # 图片固定估算
+                else:
+                    text = part.get("text") or ""
+                    total += max(1, len(text) // 3)
+            else:
+                total += max(1, len(str(part)) // 3)
+    elif isinstance(content, str):
+        total += max(1, len(content) // 3)
+    else:
+        total += max(1, len(str(content)) // 3)
+
+    # tool_calls 文本
+    tcs = msg.get("tool_calls")
+    if isinstance(tcs, list):
+        total += max(1, len(json.dumps(tcs, ensure_ascii=False)) // 3)
+
+    return max(1, total)
+
+
+def _truncate_history_by_tokens(history_msgs: List[Dict[str, Any]], max_tokens: int) -> List[Dict[str, Any]]:
+    """如果历史消息总 token 超过上限，从最早的消息开始丢弃。"""
+    if not history_msgs:
+        return history_msgs
+
+    total = sum(_estimate_message_tokens(m) for m in history_msgs)
+    if total <= max_tokens:
+        return history_msgs
+
+    # 从旧到新丢弃，直到满足限制
+    while history_msgs and total > max_tokens:
+        removed = history_msgs.pop(0)
+        total -= _estimate_message_tokens(removed)
+
+    logger.info(
+        f"[AgentHistory] truncated by tokens: kept={len(history_msgs)}, "
+        f"estimated_tokens={total}, limit={max_tokens}"
+    )
+    return history_msgs
 
 
 def build_agent_messages_with_history(
@@ -20,11 +77,17 @@ def build_agent_messages_with_history(
     image_urls: Optional[List[str]] = None,
     llm: Optional[LLMPort] = None,
     namespace: Optional[str] = None,
+    history_max_messages: int = 200,
+    history_max_tokens: int = 200_000,
+    root_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """拼装带会话历史 + 记忆召回的 messages。
 
     Args:
         namespace: 多实例隔离标签,传递给记忆检索。
+        history_max_messages: 保留的最大历史消息条数。
+        history_max_tokens: 历史消息的估算 token 上限，超出从旧消息截断。
+        root_id: 话题根消息 ID。非空时只加载同 root_id 的历史消息。
     """
     out: List[Dict[str, Any]] = [{"role": "system", "content": [{"type": "text", "text": sys_prompt}]}]
 
@@ -67,12 +130,16 @@ def build_agent_messages_with_history(
         mem_text = "【历史相似流程】\n" + "\n".join(lines) + "\n\n可参考这些流程。注意踩坑提醒。"
         out.append({"role": "system", "content": [{"type": "text", "text": mem_text}]})
 
-    history = []
+    history_msgs: List[Dict[str, Any]] = []
     if session_id:
-        history = db.get_agent_messages(session_id)
+        history = db.get_agent_messages(session_id, root_id=root_id)
         if history:
-            if len(history) > _AGENT_HISTORY_MAX_MESSAGES:
-                history = history[-_AGENT_HISTORY_MAX_MESSAGES:]
+            # Phase 1: 按条数截断（保留最新的）
+            if len(history) > history_max_messages:
+                history = history[-history_max_messages:]
+                logger.info(
+                    f"[AgentHistory] truncated by count: kept={len(history)}, limit={history_max_messages}"
+                )
 
             history_image_ids = []
             for m in history:
@@ -92,12 +159,12 @@ def build_agent_messages_with_history(
                 if role == "user":
                     if type == "image":
                         img_base64 = images_cache.get(content, content)
-                        out.append({"role": "user", "content": [
+                        history_msgs.append({"role": "user", "content": [
                             {"type": "image_url", "image_url": {"url": img_base64}},
                             {"type": "text", "text": f"_image_reference: {content}"},
                         ]})
                     else:
-                        out.append({"role": "user", "content": [{"type": "text", "text": "用户说：" + content}]})
+                        history_msgs.append({"role": "user", "content": [{"type": "text", "text": content}]})
                 else:
                     steps_json = m.get("steps_json")
                     reasoning_content = m.get("reasoning_content")
@@ -120,7 +187,12 @@ def build_agent_messages_with_history(
                                 assistant_content.append({"type": "text", "text": summary})
                         except Exception:
                             pass
-                    out.append(assistant_msg)
+                    history_msgs.append(assistant_msg)
+
+            # Phase 2: 按 token 截断（从旧消息丢弃）
+            history_msgs = _truncate_history_by_tokens(history_msgs, history_max_tokens)
+
+    out.extend(history_msgs)
 
     current_user_content = []
     if user_images:
@@ -132,7 +204,7 @@ def build_agent_messages_with_history(
     if user_message:
         current_user_content.append({
             "type": "text",
-            "text": f"用户说：{user_message}",
+            "text": user_message,
         })
 
     if current_user_content:

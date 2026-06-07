@@ -1,11 +1,11 @@
+from __future__ import annotations
+
 """
 飞书（Feishu/Lark）REST API 封装：
 - tenant_access_token 获取（带缓存）
 - 发送文本/图片消息
 - 下载消息资源
 """
-
-from __future__ import annotations
 
 import base64
 import json
@@ -19,6 +19,26 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 logger = logging.getLogger("agent_core")
+
+# 用户名缓存: open_id -> name
+_user_name_cache: Dict[str, str] = {}
+
+
+def get_user_name(open_id: str) -> Optional[str]:
+    """按 open_id 获取飞书用户显示名。带内存缓存。"""
+    if not open_id:
+        return None
+    if open_id in _user_name_cache:
+        return _user_name_cache[open_id]
+    data = _feishu_request("GET", f"/contact/v3/users/{open_id}")
+    name = None
+    if data and data.get("code") == 0:
+        user = data.get("data", {}).get("user", {})
+        if user:
+            name = (user.get("name") or user.get("nickname") or "").strip() or None
+    if name:
+        _user_name_cache[open_id] = name
+    return name
 
 
 class FeishuTokenManager:
@@ -341,3 +361,81 @@ def extract_file_info_from_event_message(message: Dict[str, Any]) -> Optional[Di
         return None
     except (json.JSONDecodeError, ValueError):
         return None
+# ---- 消息获取 ----
+
+def get_message_by_id(message_id: str) -> Optional[Dict[str, Any]]:
+    """获取飞书消息内容（用于查看引用/回复的原始消息）。
+
+    GET /open-apis/im/v1/messages/{message_id}
+    返回 {"content": "...", "msg_type": "...", "sender": {...}} 或 None
+    """
+    if not message_id:
+        return None
+    data = _feishu_request("GET", f"/im/v1/messages/{message_id}")
+    if data and data.get("code") == 0:
+        msg_item = data.get("data", {}).get("items", [None])[0]
+        if msg_item:
+            body = msg_item.get("body", {}) or {}
+            sender = msg_item.get("sender", {}) or {}
+            return {
+                "content": body.get("content", ""),
+                "msg_type": body.get("msg_type", ""),
+                "sender": sender,
+            }
+    return None
+
+
+def parse_message_content(content_str: str, msg_type: str) -> str:
+    """根据消息类型解析 content JSON，提取可读文本。"""
+    if not content_str:
+        return ""
+    try:
+        content = json.loads(content_str)
+        if msg_type == "text":
+            return (content.get("text") or "").strip()
+        elif msg_type == "post":
+            post = content.get("zh_cn") or content.get("en_us") or {}
+            paragraphs = post.get("content") or []
+            texts = []
+            for para in paragraphs:
+                for block in para:
+                    if block.get("tag") == "text":
+                        texts.append(block.get("text", ""))
+                    elif block.get("tag") == "a":
+                        texts.append(block.get("text", "") or block.get("href", ""))
+            return "".join(texts)
+        elif msg_type == "interactive":
+            elements = content.get("elements") or []
+            texts = []
+            for elem in elements:
+                if elem.get("tag") == "markdown":
+                    texts.append(elem.get("content", ""))
+            return "".join(texts)[:500]
+        else:
+            raw = str(content)
+            return raw[:200] + ("..." if len(raw) > 200 else "")
+    except (json.JSONDecodeError, ValueError):
+        return content_str[:200]
+
+def get_chat_name(chat_id: str) -> Optional[str]:
+    "获取飞书群聊名称。"
+    if not chat_id:
+        return None
+    data = _feishu_request("GET", f"/im/v1/chats/{chat_id}")
+    if data and data.get("code") == 0:
+        info = data.get("data", {})
+        return info.get("name") or None
+    return None
+
+
+def get_bot_info() -> Optional[Dict[str, str]]:
+    """获取当前 bot 自身信息。返回 {"open_id": "...", "name": "..."} 或 None。"""
+    data = _feishu_request("GET", "/bot/v3/info")
+    if data and data.get("code") == 0:
+        bot = data.get("data", {}).get("bot", {})
+        if bot:
+            return {
+                "open_id": bot.get("open_id", ""),
+                "name": bot.get("name", ""),
+            }
+    return None

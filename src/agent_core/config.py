@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from agent_core.utils.yaml_subset import load_yaml_subset
+from agent_core.utils import load_yaml_subset
 
 
 def _clean_env_value(v: Optional[str]) -> str:
@@ -30,6 +30,33 @@ def _read_json(path: Path) -> Dict[str, Any]:
         return {}
     return raw if isinstance(raw, dict) else {}
 
+
+# ── 单次对话配置 ──
+
+@dataclass
+class AgentConfig:
+    """Agent 配置"""
+    base_url: str
+    sys_prompt: str
+    api_spec: Dict[str, Any] = field(default_factory=dict)
+    skill_extra_dirs: Optional[List[str]] = None
+    """额外搜索 SKILL.md 的目录。"""
+    shell_timeout: int = 120
+    """shell 命令默认超时秒数。"""
+    shell_cwd: Optional[str] = None
+    """shell 命令工作目录（默认当前目录）。"""
+    verbose: bool = True
+    """是否输出详细事件（tool_call/tool_result/subagent 等）。
+       False 时只输出 text_stream、done、error 等用户可见事件。"""
+    history_max_messages: int = 200
+    """单次对话保留的最大历史消息条数。"""
+    history_max_tokens: int = 200_000
+    """单次对话历史消息的最大估算 Token 数，超出则从旧消息截断。"""
+    root_id: Optional[str] = None
+    """话题根消息 ID。非空时，历史消息只加载同 root_id 的消息。"""
+
+
+# ── 实例级配置 ──
 
 @dataclass
 class LLMConfig:
@@ -72,6 +99,9 @@ class InstanceConfig:
     channel: ChannelConfig = field(default_factory=ChannelConfig)
 
     mcp_enabled_only: List[str] = field(default_factory=list)
+
+    history_max_messages: int = 200
+    history_max_tokens: int = 200_000
 
     extra: Dict[str, Any] = field(default_factory=dict)
 
@@ -161,6 +191,13 @@ def _apply_yaml_overrides(cfg: InstanceConfig, yaml_data: Dict[str, Any], instan
         cfg.extra["mcp_cooldown_seconds"] = int(mcp_cfg.get("cooldown_seconds", 60))
         cfg.extra["mcp_fail_threshold"] = int(mcp_cfg.get("fail_threshold", 3))
         cfg.extra["mcp_probe_ttl_seconds"] = int(mcp_cfg.get("probe_ttl_seconds", 60))
+
+    history_cfg = yaml_data.get("history")
+    if isinstance(history_cfg, dict):
+        if "max_messages" in history_cfg:
+            cfg.history_max_messages = int(history_cfg["max_messages"])
+        if "max_tokens" in history_cfg:
+            cfg.history_max_tokens = int(history_cfg["max_tokens"])
 
 
 def _apply_global_mcp(cfg: InstanceConfig, yaml_data: Dict[str, Any]) -> None:

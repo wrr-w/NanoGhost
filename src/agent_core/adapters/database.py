@@ -57,25 +57,14 @@ class SqliteDatabase(DatabasePort):
                 );
                 CREATE TABLE IF NOT EXISTS agent_memory_cards (
                     id TEXT PRIMARY KEY, flow_hash TEXT,
-                    intent_summary TEXT, intent_examples_json TEXT,
-                    intent_vector_json TEXT, flow_signature_json TEXT,
+                    intent_summary TEXT,
+                    intent_vector_json TEXT,
                     steps_json TEXT, success_count INTEGER DEFAULT 0,
                     total_rounds INTEGER DEFAULT 0,
-                    approved_count INTEGER DEFAULT 0,
-                    rejected_count INTEGER DEFAULT 0,
                     trigger_count INTEGER DEFAULT 0,
                     scene_tag TEXT, namespace TEXT,
-                    pitfalls TEXT, experience_notes TEXT,
+                    experience_notes TEXT,
                     created_at REAL NOT NULL, updated_at REAL NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS agent_memory_edges (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    from_method TEXT NOT NULL, from_path TEXT NOT NULL,
-                    to_method TEXT NOT NULL, to_path TEXT NOT NULL,
-                    total_count INTEGER DEFAULT 0,
-                    namespace TEXT,
-                    created_at REAL NOT NULL, updated_at REAL NOT NULL,
-                    UNIQUE(from_method, from_path, to_method, to_path, namespace)
                 );
                 CREATE TABLE IF NOT EXISTS agent_edges_ml (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -96,13 +85,26 @@ class SqliteDatabase(DatabasePort):
                 );
                 CREATE INDEX IF NOT EXISTS idx_agent_chat_sessions_session
                     ON agent_chat_sessions(session_id);
+                CREATE TABLE IF NOT EXISTS agent_chat_mentions (
+                    chat_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (chat_id, name)
+                );
+                CREATE INDEX IF NOT EXISTS idx_agent_chat_mentions_chat
+                    ON agent_chat_mentions(chat_id);
             """)
             conn.commit()
-            # Migrate existing databases: add reasoning_content column if missing
+            # Migrate existing databases
             try:
                 conn.execute("ALTER TABLE agent_messages ADD COLUMN reasoning_content TEXT")
             except Exception:
-                pass  # column already exists
+                pass
+            try:
+                conn.execute("ALTER TABLE agent_messages ADD COLUMN root_id TEXT")
+            except Exception:
+                pass
             conn.commit()
 
     def create_agent_session(self, title="新对话"):
@@ -160,24 +162,30 @@ class SqliteDatabase(DatabasePort):
             conn.commit()
             return cur.rowcount > 0
 
-    def add_agent_message(self, session_id, role, content, type="text", steps_json=None, reasoning_content=None):
+    def add_agent_message(self, session_id, role, content, type="text", steps_json=None, reasoning_content=None, root_id=None):
         mid = str(uuid.uuid4())
         now = time.time()
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO agent_messages (id,session_id,role,type,content,steps_json,reasoning_content,created_at) VALUES (?,?,?,?,?,?,?,?)",
-                (mid, session_id, role, type, content, steps_json, reasoning_content, now),
+                "INSERT INTO agent_messages (id,session_id,role,type,content,steps_json,reasoning_content,root_id,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (mid, session_id, role, type, content, steps_json, reasoning_content, root_id, now),
             )
             conn.execute("UPDATE agent_sessions SET updated_at=? WHERE id=?", (now, session_id))
             conn.commit()
         return mid
 
-    def get_agent_messages(self, session_id):
+    def get_agent_messages(self, session_id, root_id=None):
         with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT id, role, type, content, steps_json, created_at FROM agent_messages WHERE session_id=? ORDER BY created_at ASC",
-                (session_id,),
-            ).fetchall()
+            if root_id:
+                rows = conn.execute(
+                    "SELECT id, role, type, content, steps_json, created_at FROM agent_messages WHERE session_id=? AND root_id=? ORDER BY created_at ASC",
+                    (session_id, root_id),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id, role, type, content, steps_json, created_at FROM agent_messages WHERE session_id=? AND root_id IS NULL ORDER BY created_at ASC",
+                    (session_id,),
+                ).fetchall()
             return [dict(r) for r in rows]
 
     def get_agent_images_batch(self, image_ids):
@@ -220,34 +228,27 @@ class SqliteDatabase(DatabasePort):
     def save_memory_card(self, card):
         with self._conn() as conn:
             conn.execute("""
-                INSERT INTO agent_memory_cards (id, flow_hash, intent_summary, intent_examples_json,
-                    intent_vector_json, flow_signature_json, steps_json,
-                    success_count, total_rounds, approved_count, rejected_count,
+                INSERT INTO agent_memory_cards (id, flow_hash, intent_summary,
+                    intent_vector_json, steps_json,
+                    success_count, total_rounds,
                     trigger_count, scene_tag, namespace, created_at, updated_at,
                     experience_notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     intent_summary=excluded.intent_summary,
-                    intent_examples_json=excluded.intent_examples_json,
                     intent_vector_json=excluded.intent_vector_json,
-                    flow_signature_json=excluded.flow_signature_json,
                     steps_json=excluded.steps_json,
                     success_count=excluded.success_count,
                     total_rounds=excluded.total_rounds,
-                    approved_count=excluded.approved_count,
-                    rejected_count=excluded.rejected_count,
                     trigger_count=excluded.trigger_count,
                     namespace=excluded.namespace,
                     experience_notes=excluded.experience_notes,
                     updated_at=excluded.updated_at
             """, (
                 card.get("id"), card.get("flow_hash"), card.get("intent_summary"),
-                json.dumps(card.get("intent_examples") or [], ensure_ascii=False),
                 json.dumps(card.get("intent_vector") or [], ensure_ascii=False),
-                json.dumps(card.get("flow_signature") or {}, ensure_ascii=False),
                 json.dumps(card.get("steps") or [], ensure_ascii=False),
                 int(card.get("success_count") or 0), int(card.get("total_rounds") or 0),
-                int(card.get("approved_count") or 0), int(card.get("rejected_count") or 0),
                 int(card.get("trigger_count") or 0), card.get("scene_tag"),
                 card.get("namespace"), float(card.get("created_at") or 0), float(card.get("updated_at") or 0),
                 json.dumps(card.get("experience_notes") or [], ensure_ascii=False),
@@ -297,30 +298,24 @@ class SqliteDatabase(DatabasePort):
             rows = conn.execute(sql, tuple(params)).fetchall()
             return [dict(r) for r in rows]
 
-    def load_all_memory_edges(self, namespace=None):
+    def load_chat_mentions(self, chat_id: str) -> List[Dict[str, Any]]:
         with self._conn() as conn:
-            if namespace:
-                rows = conn.execute(
-                    "SELECT * FROM agent_memory_edges WHERE namespace=? ORDER BY updated_at DESC",
-                    (namespace,),
-                ).fetchall()
-            else:
-                rows = conn.execute("SELECT * FROM agent_memory_edges ORDER BY updated_at DESC").fetchall()
+            rows = conn.execute(
+                "SELECT name, user_id FROM agent_chat_mentions WHERE chat_id=?",
+                (chat_id,),
+            ).fetchall()
             return [dict(r) for r in rows]
 
-    def save_memory_edge(self, edge):
+    def save_chat_mention(self, chat_id: str, name: str, user_id: str) -> None:
+        now = time.time()
         with self._conn() as conn:
-            conn.execute("""
-                INSERT INTO agent_memory_edges (from_method, from_path, to_method, to_path,
-                    total_count, namespace, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(from_method, from_path, to_method, to_path, namespace) DO UPDATE SET
-                    total_count=total_count+excluded.total_count, updated_at=excluded.updated_at
-            """, (
-                edge.get("from_method"), edge.get("from_path"),
-                edge.get("to_method"), edge.get("to_path"),
-                int(edge.get("total_count") or 0),
-                edge.get("namespace"),
-                float(edge.get("created_at") or 0), float(edge.get("updated_at") or 0),
-            ))
+            conn.execute(
+                "INSERT OR REPLACE INTO agent_chat_mentions (chat_id, name, user_id, updated_at) VALUES (?, ?, ?, ?)",
+                (chat_id, name, user_id, now),
+            )
+            conn.commit()
+
+    def delete_chat_mentions(self, chat_id: str) -> None:
+        with self._conn() as conn:
+            conn.execute("DELETE FROM agent_chat_mentions WHERE chat_id=?", (chat_id,))
             conn.commit()

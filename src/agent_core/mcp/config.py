@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .yaml_subset import load_yaml_subset, substitute_env
+from agent_core.utils import load_yaml_subset, substitute_env
 
 
 def _default_global_config_path() -> Path:
@@ -55,7 +55,6 @@ def _as_list(obj: Any) -> List[Any]:
 
 def effective_server_ids(instance_dir: Path, global_cfg: Dict[str, Any]) -> List[str]:
     # 从 YAML 读取 enabled_only，不要用 load_instance_config（返回 dataclass）
-    from agent_core.utils.yaml_subset import load_yaml_subset
     yaml_data = load_yaml_subset(instance_dir / "config.yaml") or {}
     mcp = _as_dict(yaml_data.get("mcp"))
     enabled_only = _as_list(mcp.get("enabled_only"))

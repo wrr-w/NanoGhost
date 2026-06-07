@@ -11,8 +11,7 @@ import requests
 
 from agent_core.mcp.config import global_config_path, load_global_registry, mask_headers, resolve_servers
 from agent_core.mcp.http_sse import MCPHttpSSEClient
-from agent_core.utils.yaml_subset import load_yaml_subset
-from agent_core.utils.process import pid_exists, terminate_pid
+from agent_core.utils import load_yaml_subset, pid_exists, terminate_pid
 
 
 def _instances_root() -> Path:
@@ -66,6 +65,19 @@ def _find_run_py() -> Path:
             break
         cur = cur.parent
     raise SystemExit("找不到 run.py，请在仓库目录运行或设置 NANOGHOST_RUNPY=<run.py绝对路径>")
+
+
+def _find_venv_python() -> str:
+    """优先使用 run.py 同级目录下 venv 里的 Python，回退到 sys.executable。"""
+    run_py = _find_run_py()
+    repo_root = run_py.parent
+    if os.name == "nt":
+        venv_python = repo_root / "venv" / "Scripts" / "python.exe"
+    else:
+        venv_python = repo_root / "venv" / "bin" / "python"
+    if venv_python.is_file():
+        return str(venv_python)
+    return sys.executable
 
 
 def _gateway_runtime_path(inst: Path) -> Path:
@@ -124,8 +136,9 @@ def _cmd_gateway_start(args) -> int:
         port = _pick_free_port(host)
 
     run_py = _find_run_py()
+    python_exe = _find_venv_python()
     cmd = [
-        sys.executable,
+        python_exe,
         str(run_py),
         "--gateway",
         "-I",

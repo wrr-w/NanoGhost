@@ -26,10 +26,12 @@ class DatabasePort(ABC):
     def add_agent_message(
         self, session_id: str, role: str, content: str,
         type: str = "text", steps_json: Optional[str] = None,
+        reasoning_content: Optional[str] = None,
+        root_id: Optional[str] = None,
     ) -> str: ...
 
     @abstractmethod
-    def get_agent_messages(self, session_id: str) -> List[Dict[str, Any]]: ...
+    def get_agent_messages(self, session_id: str, root_id: Optional[str] = None) -> List[Dict[str, Any]]: ...
 
     # --- 图片 ---
     @abstractmethod
@@ -47,11 +49,19 @@ class DatabasePort(ABC):
     @abstractmethod
     def delete_memory_card(self, card_id: str) -> bool: ...
 
-    # --- 流程图边（支持 namespace 隔离） ---
+    # --- 流程图边（多层编码 L1~L4） ---
     @abstractmethod
-    def load_all_memory_edges(
-        self, namespace: Optional[str] = None,
-    ) -> List[Dict[str, Any]]: ...
+    def save_ml_edge(self, edge: Dict[str, Any]) -> None: ...
 
     @abstractmethod
-    def save_memory_edge(self, edge: Dict[str, Any]) -> None: ...
+    def load_ml_edges(self, level=None, from_code=None, namespace=None) -> List[Dict[str, Any]]: ...
+
+    # --- chat mentions（@提及 name->id 持久化） ---
+    @abstractmethod
+    def load_chat_mentions(self, chat_id: str) -> List[Dict[str, Any]]: ...
+
+    @abstractmethod
+    def save_chat_mention(self, chat_id: str, name: str, user_id: str) -> None: ...
+
+    @abstractmethod
+    def delete_chat_mentions(self, chat_id: str) -> None: ...

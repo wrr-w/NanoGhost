@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from agent_core.skill.discovery import discover_skills
 from agent_core.skill.models import SkillDefinition
-from agent_core.utils.yaml_subset import load_yaml_subset
+from agent_core.utils import load_yaml_subset
 
 logger = logging.getLogger("agent_core")
 

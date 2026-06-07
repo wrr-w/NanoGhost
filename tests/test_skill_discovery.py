@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterator, List, Optional
 from agent_core.interfaces import LLMPort, LLMResponse
 
 # Must import Mock classes at module level for ToolCallMockLLM subclass
-from tests.test_basic import MockLLM, MockDatabase, MockHttp  # noqa: E402
+from tests.test_basic import MockLLM, MockDatabase  # noqa: E402
 
 from agent_core.skill import (
     SkillDefinition,
@@ -350,18 +350,17 @@ def test_non_skill_dirs_ignored():
 def test_agent_auto_discover():
     """Agent auto-discovers skills on init unless disabled."""
     from agent_core import Agent
-    from tests.test_basic import MockDatabase, MockLLM, MockHttp
+    from tests.test_basic import MockDatabase, MockLLM
 
     db = MockDatabase()
     llm = MockLLM()
-    http = MockHttp()
 
-    agent = Agent(db=db, llm=llm, http=http, auto_discover_skills=True)
+    agent = Agent(db=db, llm=llm, auto_discover_skills=True)
     assert agent.skill_registry is not None
     # Should have found at least the system lark-* skills from ~/.agents/skills/
     assert len(agent.skill_registry.list_skill_defs()) > 0
 
-    agent_no_disc = Agent(db=db, llm=llm, http=http, auto_discover_skills=False)
+    agent_no_disc = Agent(db=db, llm=llm, auto_discover_skills=False)
     assert len(agent_no_disc.skill_registry.list_skill_defs()) == 0
 
 
@@ -370,12 +369,11 @@ def test_agent_use_skill_in_loop():
     from agent_core import Agent
 
     db = MockDatabase()
-    http = MockHttp()
     llm = ToolCallMockLLM([
         LLMResponse(tool_calls=[ToolCall(id="c1", name="use_skill", arguments={"name": "test-skill"})]),
         LLMResponse(content="done with skill help"),
     ])
-    agent = Agent(db=db, llm=llm, http=http, auto_discover_skills=False)
+    agent = Agent(db=db, llm=llm, auto_discover_skills=False)
 
     agent.skill_registry.add_skill_def(SkillDefinition(
         name="test-skill", description="A test skill",
@@ -440,12 +438,11 @@ def test_shell_exec_in_agent_loop():
     from agent_core import Agent
 
     db = MockDatabase()
-    http = MockHttp()
     llm = ToolCallMockLLM([
         LLMResponse(tool_calls=[ToolCall(id="c1", name="terminal", arguments={"command": "echo hello from agent"})]),
         LLMResponse(content="shell command executed"),
     ])
-    agent = Agent(db=db, llm=llm, http=http, auto_discover_skills=False)
+    agent = Agent(db=db, llm=llm, auto_discover_skills=False)
 
     config = type("Config", (), {"base_url": "http://localhost", "sys_prompt": "You are a helper.", "api_spec": {},         "skill_extra_dirs": None, "shell_timeout": 120, "shell_cwd": None, "verbose": True})()
     session_id = db.create_agent_session("test-shell")
@@ -518,11 +515,10 @@ def test_tool_unknown_name():
 def test_tool_text_only_is_final():
     """LLM returns text-only → agent treats it as final reply (Hermes-style done)."""
     db = MockDatabase()
-    http = MockHttp()
     llm = ToolCallMockLLM([
         LLMResponse(content="The task is complete. Here are the results."),
     ])
-    agent = Agent(db=db, llm=llm, http=http, auto_discover_skills=False)
+    agent = Agent(db=db, llm=llm, auto_discover_skills=False)
 
     config = type("Config", (), {"base_url": "http://localhost", "sys_prompt": "You are a helper.", "api_spec": {},
                                  "shell_timeout": 120, "shell_cwd": None, "verbose": True})()
@@ -550,7 +546,6 @@ def test_tool_text_only_is_final():
 def test_tool_new_style_terminal():
     """LLM calls terminal tool → agent executes shell and yields step events."""
     db = MockDatabase()
-    http = MockHttp()
     llm = ToolCallMockLLM([
         LLMResponse(
             content="I'll run a command",
@@ -558,7 +553,7 @@ def test_tool_new_style_terminal():
         ),
         LLMResponse(content='{"done": true, "reply": "done with shell"}'),
     ])
-    agent = Agent(db=db, llm=llm, http=http, auto_discover_skills=False)
+    agent = Agent(db=db, llm=llm, auto_discover_skills=False)
 
     config = type("Config", (), {"base_url": "http://localhost", "sys_prompt": "You are a helper.", "api_spec": {},
                                  "shell_timeout": 120, "shell_cwd": None, "verbose": True})()
@@ -585,14 +580,13 @@ def test_tool_new_style_terminal():
 def test_tool_new_style_use_skill():
     """LLM calls use_skill tool → agent loads skill and continues."""
     db = MockDatabase()
-    http = MockHttp()
     llm = ToolCallMockLLM([
         LLMResponse(
             tool_calls=[ToolCall(id="call_1", name="use_skill", arguments={"name": "test-skill"})],
         ),
         LLMResponse(content='{"done": true, "reply": "done with skill"}'),
     ])
-    agent = Agent(db=db, llm=llm, http=http, auto_discover_skills=False)
+    agent = Agent(db=db, llm=llm, auto_discover_skills=False)
     agent.skill_registry.add_skill_def(SkillDefinition(
         name="test-skill", description="A test skill",
         content="## Instructions\nDo the thing.",
@@ -623,14 +617,13 @@ def test_tool_new_style_use_skill():
 def test_tool_use_skill_template_substitution():
     """use_skill substitutes ${HERMES_SKILL_DIR} in skill content."""
     db = MockDatabase()
-    http = MockHttp()
     llm = ToolCallMockLLM([
         LLMResponse(
             tool_calls=[ToolCall(id="c1", name="use_skill", arguments={"name": "templated"})],
         ),
         LLMResponse(content='{"done": true, "reply": "done"}'),
     ])
-    agent = Agent(db=db, llm=llm, http=http, auto_discover_skills=False)
+    agent = Agent(db=db, llm=llm, auto_discover_skills=False)
     agent.skill_registry.add_skill_def(SkillDefinition(
         name="templated", description="Has template vars",
         content="Run from ${HERMES_SKILL_DIR}",
@@ -660,14 +653,13 @@ def test_tool_use_skill_template_substitution():
 def test_tool_new_style_skills_list():
     """LLM calls skills_list tool → agent returns skill names."""
     db = MockDatabase()
-    http = MockHttp()
     llm = ToolCallMockLLM([
         LLMResponse(
             tool_calls=[ToolCall(id="call_1", name="skills_list", arguments={})],
         ),
         LLMResponse(content='{"done": true, "reply": "done listing"}'),
     ])
-    agent = Agent(db=db, llm=llm, http=http, auto_discover_skills=False)
+    agent = Agent(db=db, llm=llm, auto_discover_skills=False)
     agent.skill_registry.add_skill_def(SkillDefinition(
         name="test-skill", description="A test skill",
         content="## Instructions", filepath="/fake/SKILL.md",
@@ -696,9 +688,8 @@ def test_tool_new_style_skills_list():
 def test_tool_auto_register_default():
     """Agent auto-registers built-in tools by default."""
     db = MockDatabase()
-    http = MockHttp()
     llm = ToolCallMockLLM()
-    agent = Agent(db=db, llm=llm, http=http, auto_discover_skills=False)
+    agent = Agent(db=db, llm=llm, auto_discover_skills=False)
     tools = agent.tool_registry.list_tools()
     assert "delegate_task" in tools
     assert "terminal" in tools
@@ -716,7 +707,6 @@ def test_tool_mixed_use_skill_and_tool():
     """LLM uses use_skill text JSON, then terminal tool in next round."""
 
     db = MockDatabase()
-    http = MockHttp()
 
     class MixedLLM(MockLLM):
         def __init__(self):
@@ -739,7 +729,7 @@ def test_tool_mixed_use_skill_and_tool():
                 return LLMResponse(content="all done")
 
     llm = MixedLLM()
-    agent = Agent(db=db, llm=llm, http=http, auto_discover_skills=False)
+    agent = Agent(db=db, llm=llm, auto_discover_skills=False)
     agent.skill_registry.add_skill_def(SkillDefinition(
         name="test-skill", description="A test skill",
         content="## Instructions\nDo the thing.",

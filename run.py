@@ -91,8 +91,9 @@ logger = logging.getLogger("agent_core")
 
 # 适配器已提取至 agent_core.adapters
 from agent_core import Agent, AgentConfig
-from agent_core.adapters import SqliteDatabase, OpenAILLM, RequestsHttp, SqliteImagePort
+from agent_core.adapters import SqliteDatabase, OpenAILLM, SqliteImagePort
 from agent_core.tool import ToolCall
+from agent_core.config import load_instance_config
 
 # ---------------------------------------------------------------------------
 # ANSI colors / CLI formatter
@@ -228,7 +229,6 @@ def run_cli_chat():
 
     db = SqliteDatabase()
     llm = OpenAILLM()
-    http = RequestsHttp()
     image_port = SqliteImagePort(db)
 
     namespace = _clean_env_value(os.getenv("AGENT_NAMESPACE")) or "cli-agent"
@@ -275,16 +275,19 @@ def run_cli_chat():
             if _sk_os.path.isdir(_inst_skills):
                 _extra_dirs.append(_inst_skills)
 
-    agent = Agent(db=db, llm=llm, http=http, image_port=image_port, namespace=namespace,
+    agent = Agent(db=db, llm=llm, image_port=image_port, namespace=namespace,
                   skill_extra_dirs=_extra_dirs or None)
     sys_prompt = assemble_sys_prompt()
 
     session_id = db.create_agent_session("CLI 对话")
+    inst_cfg = load_instance_config()
     config = AgentConfig(
         base_url=os.getenv("AGENT_BASE_URL", "http://127.0.0.1:8000").rstrip("/"),
         sys_prompt=sys_prompt,
         api_spec={},
         shell_cwd=_clean_env_value(os.getenv("AGENT_WORKDIR")) or None,
+        history_max_messages=inst_cfg.history_max_messages,
+        history_max_tokens=inst_cfg.history_max_tokens,
     )
 
     print(f"\n{Style.bold('NanoGhost')} {Style.dim('— AI Agent CLI')}")
@@ -407,18 +410,20 @@ def run_single_turn(message: str, skill_name: Optional[str] = None):
     """单次对话模式。"""
     db = SqliteDatabase()
     llm = OpenAILLM()
-    http = RequestsHttp()
     image_port = SqliteImagePort(db)
 
     namespace = _clean_env_value(os.getenv("AGENT_NAMESPACE")) or "cli-agent"
-    agent = Agent(db=db, llm=llm, http=http, image_port=image_port, namespace=namespace)
+    agent = Agent(db=db, llm=llm, image_port=image_port, namespace=namespace)
     sys_prompt = assemble_sys_prompt()
     session_id = db.create_agent_session("CLI 单次")
+    inst_cfg = load_instance_config()
     config = AgentConfig(
         base_url=os.getenv("AGENT_BASE_URL", "http://127.0.0.1:8000").rstrip("/"),
         sys_prompt=sys_prompt,
         api_spec={},
         shell_cwd=_clean_env_value(os.getenv("AGENT_WORKDIR")) or None,
+        history_max_messages=inst_cfg.history_max_messages,
+        history_max_tokens=inst_cfg.history_max_tokens,
     )
 
     # 预加载技能
@@ -449,12 +454,11 @@ async def run_feishu():
 
     db = SqliteDatabase()
     llm = OpenAILLM()
-    http = RequestsHttp()
     image_port = SqliteImagePort(db)
 
     from agent_core import Agent
     namespace = _clean_env_value(os.getenv("AGENT_NAMESPACE")) or "feishu-agent"
-    agent = Agent(db=db, llm=llm, http=http, image_port=image_port, namespace=namespace)
+    agent = Agent(db=db, llm=llm, image_port=image_port, namespace=namespace)
 
     sys_prompt = assemble_sys_prompt()
     logger.info("System prompt 长度: %s 字", len(sys_prompt))
