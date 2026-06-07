@@ -81,10 +81,20 @@ def _bootstrap_instance(argv: List[str]) -> None:
 
 _bootstrap_instance(sys.argv)
 
+_inst_dir = _clean_env_value(os.getenv("INSTANCE_DIR"))
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-5s | %(name)s | %(message)s",
 )
+if _inst_dir:
+    _log_dir = os.path.join(_inst_dir, "runtime")
+    os.makedirs(_log_dir, exist_ok=True)
+    _log_path = os.path.join(_log_dir, "nanoghost.log")
+    _fh = logging.FileHandler(_log_path, encoding="utf-8")
+    _fh.setFormatter(logging.Formatter(
+        "%(asctime)s | %(levelname)-5s | %(name)s | %(message)s"
+    ))
+    logging.getLogger().addHandler(_fh)
 logging.getLogger("openai").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("agent_core")
