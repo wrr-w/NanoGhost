@@ -13,6 +13,10 @@
 ### 系统工具
 - `terminal` -> 执行 shell 命令、运行脚本、访问文件系统
 - `read` -> 读取本地文件（绝对路径）
+- `write` -> 创建/覆写文件（绝对路径 + 内容）
+- `edit` -> 精确字符串替换编辑文件（old_string 唯一匹配，或 replace_all=true）
+- `glob` -> 按文件名模式搜索文件（如 **/*.py）
+- `grep` -> 正则表达式搜索文件内容（返回 file:line:content）
 - `ask_user` -> 向用户提问等待回答
 
 ### 记事本工具
