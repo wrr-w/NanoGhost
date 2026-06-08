@@ -42,38 +42,45 @@ def get_user_name(open_id: str) -> Optional[str]:
 
 
 class FeishuTokenManager:
-    """飞书 tenant_access_token 多实例缓存管理器。"""
+    """飞书 tenant_access_token 多实例缓存管理器。按 (app_id, app_secret) 键隔离。"""
 
     def __init__(self):
-        self._token: Optional[str] = None
-        self._expire_at: float = 0.0
+        self._tokens: Dict[Tuple[str, str], Tuple[str, float]] = {}
         self._lock = threading.Lock()
 
+    def _key(self, app_id: str, app_secret: str) -> Tuple[str, str]:
+        return (app_id, app_secret)
+
     def get(self, app_id: str, app_secret: str, force_refresh: bool = False) -> Optional[str]:
+        k = self._key(app_id, app_secret)
         if not force_refresh:
             with self._lock:
-                if self._token and self._expire_at - 60 > time.time():
-                    return self._token
+                entry = self._tokens.get(k)
+                if entry and entry[1] - 60 > time.time():
+                    return entry[0]
 
         url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
         try:
             resp = requests.post(url, json={"app_id": app_id, "app_secret": app_secret}, timeout=10)
             data = resp.json()
             if data.get("code") == 0:
+                token = data["tenant_access_token"]
+                expire_at = time.time() + float(data.get("expire", 7200))
                 with self._lock:
-                    self._token = data["tenant_access_token"]
-                    self._expire_at = time.time() + float(data.get("expire", 7200))
-                return self._token
+                    self._tokens[k] = (token, expire_at)
+                return token
             logger.error(f"[Feishu] token 换取失败: {data}")
             return None
         except Exception as e:
             logger.error(f"[Feishu] token 请求异常: {e}")
             return None
 
-    def clear(self) -> None:
+    def clear(self, app_id: str = "", app_secret: str = "") -> None:
         with self._lock:
-            self._token = None
-            self._expire_at = 0.0
+            if app_id and app_secret:
+                self._tokens.pop(self._key(app_id, app_secret), None)
+            else:
+                self._tokens.clear()
 
 
 def _now() -> float:

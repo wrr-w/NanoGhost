@@ -79,7 +79,7 @@ class Agent:
             register_builtins(self.tool_registry)
             try:
                 from agent_core.mcp import MCPManager
-                from agent_core.infra.config_loader import load_instance_config
+                from agent_core.config import load_instance_config
 
                 inst_cfg = load_instance_config()
                 cooldown = inst_cfg.extra.get("mcp_cooldown_seconds", 60)

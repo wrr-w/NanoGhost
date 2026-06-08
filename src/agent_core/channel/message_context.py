@@ -168,6 +168,8 @@ class ContextBuilder:
     def __init__(self, bot_name: str = "", bot_id: str = ""):
         self._bot_name = bot_name.strip()
         self._bot_id = bot_id.strip()
+        self._state_bot_keys: List[str] = []
+        self._state_mentions: List[MentionRef] = []
 
     # ══════════════════════════════════════════════
     # 公开接口
@@ -270,12 +272,12 @@ class ContextBuilder:
 
     def _strip_self_mentions(self, text: str) -> str:
         """剥离开头和结尾的 bot 自身 @mention。"""
-        bot_keys = getattr(self, "_state_bot_keys", [])
+        bot_keys = self._state_bot_keys
         if not bot_keys or not text:
             return text
 
         self_names = list({
-            f"@{ref.name}" for ref in getattr(self, "_state_mentions", [])
+            f"@{ref.name}" for ref in self._state_mentions
             if ref.key in bot_keys and ref.name
         })
 
@@ -306,7 +308,3 @@ class ContextBuilder:
                 break
 
         return remaining
-
-    # 每次 build_user_message 调用时临时设置的状态
-    _state_bot_keys: List[str] = []
-    _state_mentions: List[MentionRef] = []

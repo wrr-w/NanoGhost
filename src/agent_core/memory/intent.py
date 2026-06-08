@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Any, Dict, List, Optional
 
 from agent_core.interfaces import DatabasePort, LLMPort
@@ -57,6 +58,24 @@ def extract_memory_md_entries(user_message: str, reply: str, steps: list) -> lis
     return entries
 
 
+def _lock_file(f):
+    if os.name == "nt":
+        import msvcrt
+        msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+
+
+def _unlock_file(f):
+    if os.name == "nt":
+        import msvcrt
+        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
 def append_to_memory_md(db, namespace: str, entries: list[dict]):
     """将条目写入 memory.md 文件"""
     inst_dir = os.getenv("INSTANCE_DIR", "")
@@ -70,25 +89,36 @@ def append_to_memory_md(db, namespace: str, entries: list[dict]):
         with open(path, "w", encoding="utf-8") as f:
             f.write("# NanoGhost Memory\n\n")
 
-    with open(path, "r", encoding="utf-8") as f:
-        text = f.read()
+    with open(path, "r+", encoding="utf-8") as f:
+        try:
+            _lock_file(f)
+            deadline = time.time() + 3
+            while time.time() < deadline:
+                try:
+                    text = f.read()
+                    break
+                except Exception:
+                    time.sleep(0.05)
 
-    for entry in entries:
-        section, line = entry["section"], entry["content"]
-        if line in text:
-            continue
-        header = f"## {section}"
-        if header in text:
-            text = text.replace(header, header + "\n" + line, 1)
-        else:
-            text += f"\n## {section}\n{line}\n"
+            for entry in entries:
+                section, line = entry["section"], entry["content"]
+                if line in text:
+                    continue
+                header = f"## {section}"
+                if header in text:
+                    text = text.replace(header, header + "\n" + line, 1)
+                else:
+                    text += f"\n## {section}\n{line}\n"
 
-    lines = text.split("\n")
-    if len(lines) > MAX_LINES:
-        text = "\n".join(lines[:MAX_LINES]) + "\n\n<!-- truncated -->"
+            lines = text.split("\n")
+            if len(lines) > MAX_LINES:
+                text = "\n".join(lines[:MAX_LINES]) + "\n\n<!-- truncated -->"
 
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(text)
+            f.seek(0)
+            f.truncate()
+            f.write(text)
+        finally:
+            _unlock_file(f)
 
 
 def summarize_intent(

@@ -123,6 +123,11 @@ class FeishuWSClient:
             chat_id = msg.get("chat_id", "")
             message_id = msg.get("message_id", "")
             now = time.time()
+
+            expired = [k for k, t in self._seen_events.items() if now - t > 120]
+            for k in expired:
+                del self._seen_events[k]
+
             if message_id in self._seen_events and (now - self._seen_events[message_id]) < 60:
                 logger.info(f"[Feishu WS] DUPLICATE msg_id={message_id} chat_id={chat_id}")
                 return
