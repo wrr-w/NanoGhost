@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+import sys
 import time
 import uuid
 from contextlib import contextmanager
@@ -22,10 +23,14 @@ class SqliteDatabase(DatabasePort):
 
     def __init__(self, db_path=""):
         _HERE = os.path.dirname(os.path.abspath(__file__))
+        if getattr(sys, 'frozen', False):
+            _FALLBACK = os.path.join(os.getcwd(), "agent_data.db")
+        else:
+            _FALLBACK = os.path.join(os.path.dirname(_HERE), "agent_data.db")
         self.db_path = (
             _clean_env_value(db_path)
             or _clean_env_value(os.getenv("AGENT_DB_PATH"))
-            or os.path.join(os.path.dirname(_HERE), "agent_data.db")
+            or _FALLBACK
         )
         self._init_db()
 

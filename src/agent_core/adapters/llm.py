@@ -2,6 +2,7 @@ import hashlib
 import time
 import math
 import os
+import sys
 from typing import List, Iterator, Optional
 
 from openai import OpenAI
@@ -10,6 +11,22 @@ import logging
 
 from agent_core.interfaces import LLMPort, LLMResponse
 from agent_core.tool.models import ToolCall
+
+
+def _make_verify():
+    """Return a verify arg for httpx that works in PyInstaller frozen env."""
+    try:
+        import certifi
+        path = certifi.where()
+        if os.path.isfile(path):
+            return path
+    except Exception:
+        pass
+    if getattr(sys, "frozen", False):
+        bundled = os.path.join(sys._MEIPASS, "certifi", "cacert.pem")
+        if os.path.isfile(bundled):
+            return bundled
+    return True
 
 
 # ── 内置 fallback embedding（纯 Python，无额外依赖）────────
@@ -73,10 +90,12 @@ def _probe_sentence_transformers() -> Optional[type]:
 
 class OpenAILLM(LLMPort):
     def __init__(self):
+        import httpx
         self.client = OpenAI(
             api_key=os.getenv("LLM_API_KEY"),
             base_url=os.getenv("LLM_BASE_URL"),
             timeout=30,
+            http_client=httpx.Client(verify=_make_verify()),
         )
         self.model = os.getenv("LLM_MODEL") or "gpt-4o"
 

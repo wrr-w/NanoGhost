@@ -12,15 +12,21 @@ print(f"SPEC_DIR: {SPEC_DIR}")
 print(f"SRC_DIR exists: {os.path.exists(SRC_DIR)}")
 print(f"PROMPTS_DIR exists: {os.path.exists(PROMPTS_DIR)}")
 
+import certifi as _certifi_mod
+_CA_BUNDLE = _certifi_mod.where()
+
 block_cipher = None
 
 a = Analysis(
-    [os.path.join(SPEC_DIR, "run.py"),
+    [os.path.join(SPEC_DIR, "src", "agent_core", "cli.py"),
+     os.path.join(SPEC_DIR, "run.py"),
      os.path.join(SPEC_DIR, "gateway_server.py")],
     pathex=[SRC_DIR],
     binaries=[],
     datas=[
         (PROMPTS_DIR, "prompts"),
+        (os.path.join(SPEC_DIR, ".env.example"), "."),
+        (_CA_BUNDLE, "certifi"),
     ],
     hiddenimports=[
         "json5",
@@ -30,11 +36,13 @@ a = Analysis(
         "lark_oapi",
         "fastembed",
         "typing_extensions",
-        "aiosqlite",
         "anyio",
         "httpx",
         "pydantic",
         "pydantic_core",
+        "certifi",
+        "sqlite3",
+        "_sqlite3",
     ],
     hookspath=[],
     hooksconfig={},

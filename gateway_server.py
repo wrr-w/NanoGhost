@@ -134,6 +134,10 @@ class WorkerManager:
         return Path(__file__).resolve().with_name("run.py")
 
     @staticmethod
+    def _is_frozen() -> bool:
+        return getattr(sys, "frozen", False)
+
+    @staticmethod
     def _resolve_python() -> str:
         """返回应使用的 Python 解释器路径。
 
@@ -197,13 +201,17 @@ class WorkerManager:
         env.setdefault("PYTHONUNBUFFERED", "1")
         env.setdefault("PYTHONIOENCODING", "utf-8")
         python = self._resolve_python()
-        cmd = [python, str(self._run_py_path())]
+        if self._is_frozen():
+            cmd = [python]
+        else:
+            cmd = [python, str(self._run_py_path())]
 
         self._runtime_dir().mkdir(parents=True, exist_ok=True)
         try:
             p = subprocess.Popen(
                 cmd,
                 cwd=str(self.instance_dir),
+                env=env,
             )
         except Exception as e:
             rt = {"running": False, "pid": None, "started_at": None, "last_error": str(e), "updated_at": int(time.time())}

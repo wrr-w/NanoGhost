@@ -49,7 +49,12 @@ def _atomic_write_json(path: Path, data: dict) -> None:
     tmp.replace(path)
 
 
+_FROZEN = getattr(sys, "frozen", False)
+
+
 def _find_run_py() -> Path:
+    if _FROZEN:
+        return Path(sys.executable)
     p = os.getenv("NANOGHOST_RUNPY") or ""
     p = p.strip()
     if p:
@@ -68,7 +73,8 @@ def _find_run_py() -> Path:
 
 
 def _find_venv_python() -> str:
-    """优先使用 run.py 同级目录下 venv 里的 Python，回退到 sys.executable。"""
+    if _FROZEN:
+        return sys.executable
     run_py = _find_run_py()
     repo_root = run_py.parent
     if os.name == "nt":
@@ -137,17 +143,20 @@ def _cmd_gateway_start(args) -> int:
 
     run_py = _find_run_py()
     python_exe = _find_venv_python()
-    cmd = [
-        python_exe,
-        str(run_py),
-        "--gateway",
-        "-I",
-        str(inst),
-        "--host",
-        host,
-        "--port",
-        str(port),
-    ]
+    if _FROZEN:
+        cmd = [sys.executable, "--gateway", "-I", str(inst), "--host", host, "--port", str(port)]
+    else:
+        cmd = [
+            python_exe,
+            str(run_py),
+            "--gateway",
+            "-I",
+            str(inst),
+            "--host",
+            host,
+            "--port",
+            str(port),
+        ]
 
     env = dict(os.environ)
     env["INSTANCE_DIR"] = str(inst)
@@ -343,7 +352,10 @@ def _cmd_instance_create(args) -> int:
         print(json.dumps({"ok": False, "name": name, "path": str(inst), "error": "already exists"}, ensure_ascii=False))
         return 1
     _ensure_instance_layout(inst)
-    repo = Path(__file__).resolve().parent.parent.parent
+    if _FROZEN:
+        repo = Path(sys._MEIPASS)
+    else:
+        repo = Path(__file__).resolve().parent.parent.parent
     for src in [repo / ".env.example", repo / "prompts" / "agent_profile.md", repo / "prompts" / "agent_rules_conduct.md"]:
         if src.is_file():
             dst = inst / src.name
@@ -532,6 +544,10 @@ def main(argv: list[str] | None = None) -> int:
         prog="nanoghost",
         description="NanoGhost -- multi-instance LLM Agent framework with Feishu/MCP/Gateway support",
     )
+    parser.add_argument("--gateway", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--host", default="127.0.0.1", help=argparse.SUPPRESS)
+    parser.add_argument("--port", type=int, default=0, help=argparse.SUPPRESS)
+    parser.add_argument("--instance-dir", "-I", default=None, help=argparse.SUPPRESS)
     sub = parser.add_subparsers(dest="cmd")
 
     inst = sub.add_parser("instance", help="manage instance directories (create / list / resolve path)")
@@ -612,11 +628,80 @@ def main(argv: list[str] | None = None) -> int:
     p_reload.set_defaults(func=_cmd_mcp_reload)
 
     args = parser.parse_args(argv)
+    if args.gateway:
+        if not args.port or int(args.port) <= 0:
+            parser.error("--port required with --gateway")
+        inst_raw = args.instance_dir or os.getenv("INSTANCE_DIR") or ""
+        inst_raw = inst_raw.strip()
+        if not inst_raw:
+            parser.error("--instance-dir/-I required with --gateway")
+        p = Path(os.path.expanduser(inst_raw))
+        if p.is_absolute() or p.exists() or any(x in inst_raw for x in ("/", "\\", ":")):
+            inst = Path(os.path.abspath(str(p)))
+        else:
+            inst = (_instances_root() / inst_raw).resolve()
+        from gateway_server import serve_gateway
+        serve_gateway(host=str(args.host), port=int(args.port), instance_dir=inst)
+        return 0
     func = getattr(args, "func", None)
     if func is None:
-        parser.print_help()
-        return 1
+        # Agent worker fallthrough: when the frozen exe is called without a
+        # subcommand, run as an agent (feishu/CLI) based on AGENT_MODE env var.
+        # This is used by the gateway to spawn workers without a run.py path.
+        _run_agent_mode()
+        return 0
     return int(func(args) or 0)
+
+
+def _run_agent_mode() -> None:
+    import asyncio
+    import logging
+
+    # Ensure SSL certs are available in PyInstaller frozen environment
+    try:
+        import certifi as _certifi
+        os.environ["SSL_CERT_FILE"] = _certifi.where()
+    except Exception:
+        pass
+
+    # Trigger run.py module-level bootstrap (env loading, log setup, etc.)
+    import run  # noqa: F401
+
+    from agent_core import Agent, AgentConfig
+    from agent_core.adapters import SqliteDatabase, OpenAILLM, SqliteImagePort
+    from run import assemble_sys_prompt, run_cli_chat
+
+    inst_dir = os.getenv("INSTANCE_DIR", "")
+    if inst_dir:
+        data_dir = os.path.join(inst_dir, "data")
+        os.makedirs(data_dir, exist_ok=True)
+        db_path = os.path.join(data_dir, "agent_data.db")
+    else:
+        db_path = ""
+
+    mode = os.getenv("AGENT_MODE", "cli").lower()
+    if mode == "feishu":
+        if not os.getenv("FEISHU_APP_ID") or not os.getenv("FEISHU_APP_SECRET"):
+            logging.getLogger("agent_core").error("飞书模式需要设置 FEISHU_APP_ID 和 FEISHU_APP_SECRET")
+            return
+        db = SqliteDatabase(db_path=db_path)
+        llm = OpenAILLM()
+        image_port = SqliteImagePort(db)
+        namespace = os.getenv("AGENT_NAMESPACE", "").strip() or "feishu-agent"
+        agent = Agent(db=db, llm=llm, image_port=image_port, namespace=namespace)
+        sys_prompt = assemble_sys_prompt()
+        logging.getLogger("agent_core").info("System prompt 长度: %s 字", len(sys_prompt))
+        from agent_core.channel.feishu import FeishuWSClient
+        ws_client = FeishuWSClient(
+            agent=agent,
+            sys_prompt=sys_prompt,
+            api_spec={},
+            base_url=os.getenv("AGENT_BASE_URL", "http://127.0.0.1:8000").rstrip("/"),
+        )
+        logging.getLogger("agent_core").info("Agent 启动完毕, 等待飞书消息...")
+        asyncio.run(ws_client.run_forever())
+    else:
+        run_cli_chat()
 
 
 if __name__ == "__main__":
