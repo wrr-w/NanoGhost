@@ -3,59 +3,15 @@ import logging
 import os
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agent_core.interfaces import DatabasePort, LLMPort
 
 from agent_core.interfaces import DatabasePort, LLMPort
 
 logger = logging.getLogger("agent_core")
 
-
-def extract_memory_md_entries(user_message: str, reply: str, steps: list) -> list[dict]:
-    """从对话中提取值得记入 memory.md 的信息。纯字符串判断，不需要 LLM。"""
-    entries = []
-
-    # H1: 用户自称
-    for prefix in ["叫我", "我是", "叫我了"]:
-        if prefix in user_message:
-            idx = user_message.find(prefix) + len(prefix)
-            name = user_message[idx:].split("。")[0].split("，")[0].split(" ")[0].strip()
-            if name and len(name) <= 10:
-                entries.append({"section": "user_info", "content": f"- Name: {name}"})
-                break
-
-    # H2: 用户偏好
-    for kw in ["喜欢", "不要", "倾向", "偏好"]:
-        if kw in user_message:
-            idx = user_message.find(kw)
-            text = user_message[idx:].split("。")[0].split("，")[0].strip()
-            if 3 < len(text) < 60:
-                entries.append({"section": "preference", "content": f"- {text}"})
-                break
-
-    # H3: 回复中的建议
-    for kw in ["建议", "注意", "推荐", "以后"]:
-        if kw in reply:
-            idx = reply.find(kw)
-            sentence = reply[idx:].split("。")[0].split("!")[0].strip()
-            if 5 < len(sentence) < 100:
-                entries.append({"section": "tips", "content": f"- {sentence}"})
-                break
-
-    # H4: 路径提取（从 terminal 输出中）
-    path_cmds = {"dir", "pwd", "where", "ls", "cd", "find"}
-    for s in (steps or []):
-        if s.get("method") != "EXEC":
-            continue
-        cmd = (s.get("path") or "").strip().split()[0] if s.get("path") else ""
-        if cmd not in path_cmds:
-            continue
-        for line in (s.get("result_preview") or "").split("\n"):
-            line = line.strip()
-            if re.match(r"^[A-Z]:\\\\", line):
-                entries.append({"section": "project_context", "content": f"- Path: {line}"})
-                break
-
-    return entries
 
 
 def _lock_file(f):
@@ -168,3 +124,57 @@ def summarize_intent(
     except Exception:
         pass
     return ""  # LLM 失败，不记录
+
+
+def summarize_to_memory_md(
+    llm: LLMPort,
+    user_message: str,
+    reply: str,
+    session_id: Optional[str],
+    db: DatabasePort,
+    round_number: int,
+) -> list[dict]:
+    """每 N 轮用 LLM 判断是否有值得记入 memory.md 的信息。"""
+    if round_number % 10 != 0:
+        return []
+    try:
+        history = db.get_agent_messages(session_id) if session_id else []
+    except Exception:
+        history = []
+
+    # 取最近 3 轮对话
+    recent = []
+    for msg in (history or []):
+        if isinstance(msg, dict) and msg.get("role") in ("user", "assistant") and msg.get("type") == "text":
+            txt = (msg.get("content") or "").strip()
+            if txt:
+                recent.append(f"{msg['role']}: {txt[:200]}")
+    recent = recent[-6:]  # 3 user + 3 assistant
+
+    if not recent:
+        return []
+
+    context = "\n".join(recent)
+    prompt = (
+        "以下是最近几轮对话：\n"
+        f"{context}\n\n"
+        "请判断是否有值得记住的信息，例如：用户个人信息、偏好、项目上下文、重要约定。\n"
+        "如果有，输出 JSON 数组，每个元素包含 section 和 content，例如：\n"
+        '[{"section": "user_info", "content": "- 用户叫张三"}, {"section": "preference", "content": "- 喜欢简洁回复"}]\n'
+        "如果没有值得记的，输出 []\n"
+        "只输出 JSON，不要其他文字："
+    )
+    try:
+        resp = llm.chat([{"role": "user", "content": [{"type": "text", "text": prompt}]}])
+        if resp and resp.content:
+            import json
+            entries = json.loads(resp.content.strip())
+            if isinstance(entries, list):
+                for e in entries:
+                    if not isinstance(e, dict) or "section" not in e or "content" not in e:
+                        return []
+                logger.info(f"[AgentMemory] LLM extracted {len(entries)} memory.md entries at round {round_number}")
+                return entries
+    except Exception:
+        pass
+    return []

@@ -12,6 +12,7 @@ class SkillDefinition:
     description: str
     content: str
     filepath: str
+    group: str = ""                    # 分组名称（如 "lark"、"system"），空表示无分组
     license: Optional[str] = None
     compatibility: Optional[str] = None
     version: Optional[str] = None
@@ -31,4 +32,13 @@ class SkillDefinition:
             "tags": list(self.tags),
             "related_skills": list(self.related_skills),
             "metadata": dict(self.metadata),
+            "group": self.group,
         }
+
+
+@dataclass
+class SkillGroup:
+    """技能分组，对应一个包含子技能的目录。"""
+    name: str
+    description: str = ""
+    skills: List[SkillDefinition] = field(default_factory=list)

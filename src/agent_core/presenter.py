@@ -100,13 +100,19 @@ async def run_agent_turn(
     if is_new or session_context not in full_sys_prompt:
         full_sys_prompt += "\n\n" + session_context
 
+    root_key = ""
+    if source.thread_id:
+        root_key = source.thread_id
+    elif ctx.root_id:
+        root_key = ctx.root_id
+
     config = AgentConfig(
         base_url=base_url,
         sys_prompt=full_sys_prompt,
         api_spec=api_spec or {},
         history_max_messages=getattr(identity, "history_max_messages", 120),
         history_max_tokens=getattr(identity, "history_max_tokens", 200_000),
-        root_id=ctx.root_id or None,
+        root_id=root_key or None,
     )
 
     # 4. Reaction 表示正在处理
@@ -174,13 +180,6 @@ async def run_agent_turn(
                         io.reply(message_id, reply_text)
                     else:
                         io.send_text(chat_id, reply_text)
-                    # 提取图片引用
-                    img_ids = _extract_img_ids(reply_text)
-                    if img_ids:
-                        images_data = agent.db.get_agent_images_batch(img_ids) or []
-                        for row in images_data:
-                            if isinstance(row, dict) and row.get("base64"):
-                                out_images.append(row["base64"])
                 reply_text = "__DONE_SENT__"
                 done_sent = True
 
@@ -192,12 +191,6 @@ async def run_agent_turn(
                 io.reply(message_id, reply_text)
             else:
                 io.send_text(chat_id, reply_text)
-            img_ids = _extract_img_ids(reply_text)
-            if img_ids:
-                images_data = agent.db.get_agent_images_batch(img_ids) or []
-                for row in images_data:
-                    if isinstance(row, dict) and row.get("base64"):
-                        out_images.append(row["base64"])
 
         # 7. 回发图片
         if out_images:
@@ -208,18 +201,6 @@ async def run_agent_turn(
     finally:
         if message_id and reaction_id:
             io.delete_reaction(message_id, reaction_id)
-
-
-def _extract_img_ids(s: str) -> List[str]:
-    import re
-    ids = re.findall(r"\bimg-[0-9a-fA-F-]{6,}\b", s or "")
-    seen = set()
-    out = []
-    for i in ids:
-        if i not in seen:
-            seen.add(i)
-            out.append(i)
-    return out[:20]
 
 
 def _format_ask_user_text(d: Dict[str, Any]) -> str:

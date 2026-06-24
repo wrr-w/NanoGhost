@@ -21,6 +21,7 @@ from agent_core.channel.message_context import ContextBuilder
 from agent_core.channel.interfaces import ChannelIO
 from agent_core.presenter import run_agent_turn
 
+from .tools import register_feishu_tools
 from .sdk import FeishuSDK
 from .turn import FeishuTurnParser
 from .io import FeishuIO
@@ -47,7 +48,10 @@ class FeishuWSClient:
         bot_name = os.environ.get("FEISHU_BOT_NAME", "")
         # bot_id 优先从环境变量读取，未配置时自动从飞书 API 获取
         bot_id = os.environ.get("FEISHU_BOT_OPEN_ID", "")
-        self._context_builder = ContextBuilder(bot_name=bot_name, bot_id=bot_id)
+        lark_cli_profile = os.environ.get("LARK_CLI_PROFILE", "")
+        self._context_builder = ContextBuilder(
+            bot_name=bot_name, bot_id=bot_id, lark_cli_profile=lark_cli_profile,
+        )
 
         # 通用层
         self.instance = BotInstance(sys_prompt, bot_name=bot_name, bot_id=bot_id)
@@ -60,6 +64,9 @@ class FeishuWSClient:
         self.turn = FeishuTurnParser(self._context_builder)
         self.io = FeishuIO()
         self.io.set_name_map(self.sessions.mention_name_map)
+
+        # 注册飞书特有工具（lookup_user 等，替代全量群成员 dump）
+        register_feishu_tools(self.agent, self.sessions.mention_name_map)
 
         # 事件去重
         self._seen_events: Dict[str, float] = {}
@@ -79,10 +86,14 @@ class FeishuWSClient:
                 self.instance.bot_name = bot_name or self.instance.bot_name
                 self._context_builder._bot_id = bot_id
                 self._context_builder._bot_name = bot_name or self._context_builder._bot_name
-                # SessionStore 通过 get_bot_id=lambda: self.instance.bot_id 自动对齐
+                if not self._context_builder._lark_cli_profile:
+                    self._context_builder._lark_cli_profile = self._context_builder._bot_name
                 logger.info(f"[Feishu WS] auto-resolved bot_id={bot_id} name={bot_name}")
-        except Exception:
-            logger.exception("[Feishu WS] failed to auto-resolve bot_id")
+            else:
+                logger.warning(f"[Feishu WS] get_bot_info returned no data, bot_id remains empty. "
+                               f"Check Lark app scope or network.")
+        except Exception as e:
+            logger.exception(f"[Feishu WS] failed to auto-resolve bot_id: {e}")
 
     async def start(self) -> None:
         await self.run_forever()
@@ -187,7 +198,7 @@ class FeishuWSClient:
             return
 
         # 2. 群聊未@bot→跳过
-        is_mention = self.turn.is_group_mention_bot(event_data)
+        is_mention = self.turn.is_group_mention_bot(event_data, self.instance.bot_id or "", self.instance.bot_name or "")
         logger.info(f"[Feishu WS] is_group_mention_bot={is_mention}")
         if not is_mention:
             logger.info("[Feishu WS] SKIP not mention bot")
@@ -231,10 +242,6 @@ class FeishuWSClient:
         if text.startswith("/stop"):
             api.send_text_message_to_chat(chat_id, "Stopped")
             return
-        if text.startswith("/img"):
-            self._handle_img(chat_id, text)
-            return
-
         # 5. 消费图片缓存
         cached = self.sessions.consume_image_cache(chat_id)
         logger.info(f"[Feishu WS] image_cache consumed={len(cached)}")
@@ -282,22 +289,4 @@ class FeishuWSClient:
             api_spec=self._api_spec,
         )
 
-    def _handle_img(self, chat_id: str, text: str):
-        """处理 /img 命令（飞书特有）。"""
-        parts = [p for p in text.split() if p.strip()]
-        ids = [
-            p.replace("/agent-images/", "", 1) if p.startswith("/agent-images/") else p
-            for p in parts[1:]
-        ]
-        ids = [x for x in ids if x]
-        if not ids:
-            api.send_text_message_to_chat(chat_id, "Usage: /img img-xxx img-yyy")
-            return
-        rows = self.agent.db.get_agent_images_batch(ids) or []
-        b64 = [r["base64"] for r in rows if isinstance(r, dict) and r.get("base64")]
-        if not b64:
-            api.send_text_message_to_chat(chat_id, "No images found")
-            return
-        r = api.send_images_base64_to_chat(chat_id, b64)
-        if not r.get("ok"):
-            api.send_text_message_to_chat(chat_id, f"Failed: sent={r.get('sent')} failed={r.get('failed')}")
+

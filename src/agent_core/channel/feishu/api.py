@@ -30,15 +30,47 @@ def get_user_name(open_id: str) -> Optional[str]:
         return None
     if open_id in _user_name_cache:
         return _user_name_cache[open_id]
-    data = _feishu_request("GET", f"/contact/v3/users/{open_id}")
+    path = f"/contact/v3/users/{open_id}?user_id_type=open_id"
+    data = _feishu_request("GET", path)
     name = None
     if data and data.get("code") == 0:
         user = data.get("data", {}).get("user", {})
         if user:
             name = (user.get("name") or user.get("nickname") or "").strip() or None
+        if not name:
+            logger.warning(f"[Feishu] get_user_name({open_id}) 返回空 name, user keys={list(user.keys()) if user else 'None'}")
+    else:
+        code = data.get("code") if data else "N/A"
+        msg = data.get("msg") if data else "N/A"
+        logger.warning(f"[Feishu] get_user_name({open_id}) 失败 code={code} msg={msg}")
     if name:
         _user_name_cache[open_id] = name
     return name
+
+
+def get_user_info(open_id: str) -> Optional[Dict[str, Any]]:
+    """获取飞书用户详细信息（姓名、职位、邮箱、部门等）。
+
+    Returns:
+        dict with keys: name, en_name, email, mobile, job_title, employee_no, department_ids
+        或 None（未找到 / API 失败）。
+    """
+    if not open_id:
+        return None
+    data = _feishu_request("GET", f"/contact/v3/users/{open_id}")
+    if data and data.get("code") == 0:
+        user = data.get("data", {}).get("user", {})
+        if user:
+            return {
+                "name": user.get("name") or "",
+                "en_name": user.get("en_name") or "",
+                "email": user.get("email") or "",
+                "mobile": user.get("mobile") or "",
+                "job_title": user.get("job_title") or "",
+                "employee_no": user.get("employee_no") or "",
+                "department_ids": user.get("department_ids") or [],
+            }
+    return None
 
 
 class FeishuTokenManager:
@@ -384,11 +416,19 @@ def get_message_by_id(message_id: str) -> Optional[Dict[str, Any]]:
         if msg_item:
             body = msg_item.get("body", {}) or {}
             sender = msg_item.get("sender", {}) or {}
+            # msg_type 可能在 item 层也在 body 层，都试
+            msg_type = msg_item.get("msg_type") or body.get("msg_type") or body.get("content_type") or ""
             return {
                 "content": body.get("content", ""),
-                "msg_type": body.get("msg_type", ""),
+                "msg_type": msg_type,
                 "sender": sender,
             }
+        else:
+            logger.warning(f"[Feishu] get_message_by_id({message_id}) 返回空 items")
+    else:
+        code = data.get("code") if data else "N/A"
+        msg = data.get("msg") if data else "N/A"
+        logger.warning(f"[Feishu] get_message_by_id({message_id}) 失败 code={code} msg={msg}")
     return None
 
 
@@ -398,6 +438,18 @@ def parse_message_content(content_str: str, msg_type: str) -> str:
         return ""
     try:
         content = json.loads(content_str)
+        # content 可能是 JSON 数组（卡片消息的 elements 数组）
+        if isinstance(content, list):
+            texts = []
+            for item in content:
+                if isinstance(item, dict):
+                    if item.get("tag") == "text":
+                        texts.append(item.get("text", ""))
+                    elif item.get("tag") == "markdown":
+                        texts.append(item.get("content", ""))
+                    elif item.get("tag") == "a":
+                        texts.append(item.get("text", "") or item.get("href", ""))
+            return "".join(texts).strip()[:500]
         if msg_type == "text":
             return (content.get("text") or "").strip()
         elif msg_type == "post":
@@ -414,9 +466,25 @@ def parse_message_content(content_str: str, msg_type: str) -> str:
         elif msg_type == "interactive":
             elements = content.get("elements") or []
             texts = []
+            # 卡片标题
+            title = content.get("header", {}).get("title", {})
+            if isinstance(title, dict):
+                for block in (title.get("elements") or []):
+                    if block.get("tag") == "text":
+                        texts.append(block.get("text", ""))
             for elem in elements:
                 if elem.get("tag") == "markdown":
                     texts.append(elem.get("content", ""))
+                elif elem.get("tag") == "text":
+                    texts.append(elem.get("text", ""))
+                elif elem.get("tag") == "column_set":
+                    # 卡片中的列布局，递归提取子元素
+                    for col in (elem.get("flex_layout", []) + elem.get("columns", [])):
+                        for child in (col.get("elements", []) if isinstance(col, dict) else []):
+                            if child.get("tag") == "markdown":
+                                texts.append(child.get("content", ""))
+                            elif child.get("tag") == "text":
+                                texts.append(child.get("text", ""))
             return "".join(texts)[:500]
         else:
             raw = str(content)
@@ -435,14 +503,83 @@ def get_chat_name(chat_id: str) -> Optional[str]:
     return None
 
 
+def get_chat_members(chat_id: str) -> List[Dict[str, str]]:
+    """获取飞书群聊成员列表。返回 [{open_id, name}, ...] 或空列表。"""
+    if not chat_id:
+        return []
+    members = []
+    page_token = ""
+    while True:
+        params = f"page_size=50"
+        if page_token:
+            params += f"&page_token={page_token}"
+        data = _feishu_request("GET", f"/im/v1/chats/{chat_id}/members?{params}")
+        if not data or data.get("code") != 0:
+            break
+        items = data.get("data", {}).get("items", [])
+        for it in items:
+            oid = (it.get("member_id") or {}).get("open_id", "") or it.get("open_id", "")
+            name = it.get("name", "") or it.get("nickname", "") or ""
+            if oid:
+                members.append({"open_id": oid, "name": name})
+        if not data.get("data", {}).get("has_more"):
+            break
+        page_token = data.get("data", {}).get("page_token", "")
+    return members
+
+
+def get_thread_messages(thread_id: str, exclude_message_id: str = "") -> List[Dict[str, Any]]:
+    """获取话题（thread）内的消息列表。返回 [{sender_name, content, message_id}, ...]。"""
+    if not thread_id:
+        return []
+    result: List[Dict[str, Any]] = []
+    page_token = ""
+    pages = 0
+    while True:
+        pages += 1
+        if pages > 10:
+            break
+        params = f"container_id_type=thread&container_id={thread_id}&page_size=50&sort_type=ByCreateTimeAsc"
+        if page_token:
+            params += f"&page_token={page_token}"
+        data = _feishu_request("GET", f"/im/v1/messages?{params}")
+        if not data or data.get("code") != 0:
+            break
+        items = data.get("data", {}).get("items", []) or []
+        for it in items:
+            mid = (it.get("message_id") or "").strip()
+            if exclude_message_id and mid == exclude_message_id:
+                continue
+            body = it.get("body", {}) or {}
+            sender = it.get("sender", {}) or {}
+            msg_type = it.get("msg_type") or body.get("msg_type") or body.get("content_type") or ""
+            content_str = body.get("content", "") or ""
+            parsed = parse_message_content(content_str, msg_type)
+            if not parsed:
+                continue
+            sender_id = (sender.get("id") or "").strip()
+            sender_name = get_user_name(sender_id) or sender_id[:12] or "用户"
+            result.append({"message_id": mid, "sender_name": sender_name, "content": parsed[:500]})
+        if not data.get("data", {}).get("has_more"):
+            break
+        page_token = data.get("data", {}).get("page_token", "")
+        if not page_token:
+            break
+    return result
+
+
 def get_bot_info() -> Optional[Dict[str, str]]:
     """获取当前 bot 自身信息。返回 {"open_id": "...", "name": "..."} 或 None。"""
     data = _feishu_request("GET", "/bot/v3/info")
     if data and data.get("code") == 0:
-        bot = data.get("data", {}).get("bot", {})
+        bot = data.get("bot", {})
         if bot:
             return {
                 "open_id": bot.get("open_id", ""),
-                "name": bot.get("name", ""),
+                "name": bot.get("app_name", ""),
             }
+    # 打详细日志以便诊断
+    code = data.get("code") if data else "N/A"
+    msg = data.get("msg") if data else "N/A"
+    logger.warning(f"[Feishu] get_bot_info FAILED: app_id={os.getenv('FEISHU_APP_ID','?')[:20]}... code={code} msg={msg}")
     return None

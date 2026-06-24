@@ -1,3 +1,4 @@
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Iterator, Optional
@@ -19,6 +20,16 @@ class LLMResponse:
 
 class LLMPort(ABC):
     """LLM 端口：流式对话 + embedding。"""
+
+    @property
+    def supports_vision(self) -> bool:
+        """当前模型是否支持图片输入（多模态）。
+
+        从环境变量 LLM_SUPPORTS_VISION 读取，不依赖硬编码模型名映射。
+        Adapter 可覆盖此属性。
+        """
+        val = os.getenv("LLM_SUPPORTS_VISION", "").strip().lower()
+        return val in ("1", "true", "yes")
 
     @abstractmethod
     def stream_chat(

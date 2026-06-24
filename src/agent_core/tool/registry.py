@@ -93,25 +93,29 @@ class ToolRegistry:
         return groups
 
     def dispatch(self, name: str, args: Dict[str, Any], context: Dict[str, Any]) -> ToolResult:
-        """Dispatch a tool call to its handler.
-
-        Args:
-            name: Tool name.
-            args: Tool arguments (parsed JSON).
-            context: Execution context dict (db, llm, http, config, etc.).
-
-        Returns:
-            ToolResult from the handler.
-
-        Raises:
-            KeyError if tool is not found.
-        """
         handler = self._handlers.get(name)
         if handler is None:
             logger.error(f"[ToolRegistry] Unknown tool: {name}")
             return ToolResult(ok=False, error=f"未知工具: {name}")
         try:
-            return handler(args, context)
+            result = handler(args, context)
+            # Record step for memory system
+            all_steps_out = context.get("all_steps_out")
+            if all_steps_out is not None:
+                method = args.get("method", name).upper()
+                path = args.get("path", "")
+                step_out = {
+                    "step": len(all_steps_out) + 1,
+                    "method": method,
+                    "path": path,
+                    "tool_name": name,
+                    "ok": result.ok if isinstance(result, ToolResult) else True,
+                    "status_code": 0 if result.ok else -1,
+                }
+                if hasattr(result, 'status_code') and result.status_code:
+                    step_out["status_code"] = result.status_code
+                all_steps_out.append(step_out)
+            return result
         except Exception as e:
             logger.exception(f"[ToolRegistry] Handler error for {name}: {e}")
             return ToolResult(ok=False, error=str(e))

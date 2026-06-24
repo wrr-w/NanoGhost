@@ -2,27 +2,39 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-from .models import SkillDefinition
+from .models import SkillDefinition, SkillGroup
 
 logger = logging.getLogger("agent_core")
 
 # 技能根目录：默认 ~/.agents/skills，可通过环境变量覆盖（用于多实例隔离）
 AGENTS_SKILLS_DIR = os.path.expanduser(os.getenv("AGENTS_SKILLS_DIR", "~/.agents/skills"))
 
-# 缓存上次扫描时间戳和结果
+# 缓存上次扫描时间戳和结果（按根目录缓存）
 _cache: Dict[str, Tuple[float, List[SkillDefinition]]] = {}
 
 
-def _list_skill_names(basedir: str) -> List[str]:
+def _list_subdirs(basedir: str) -> List[str]:
+    """列出 basedir 下的所有子目录名（非递归）。"""
     try:
-        return [
-            d.name for d in Path(basedir).iterdir()
-            if d.is_dir() and (d / "SKILL.md").is_file()
-        ]
+        return [d.name for d in Path(basedir).iterdir() if d.is_dir()]
     except (FileNotFoundError, PermissionError, NotADirectoryError):
         return []
+
+
+def _has_skill_md(directory: str) -> bool:
+    return os.path.isfile(os.path.join(directory, "SKILL.md"))
+
+
+def _is_category_dir(directory: str) -> bool:
+    """判断一个目录是否为技能分组目录：包含至少一个子目录且有 SKILL.md。"""
+    if not os.path.isdir(directory):
+        return False
+    for sub in _list_subdirs(directory):
+        if _has_skill_md(os.path.join(directory, sub)):
+            return True
+    return False
 
 
 def _parse_frontmatter(text: str) -> Tuple[Dict[str, Any], str]:
@@ -90,8 +102,13 @@ def _parse_frontmatter(text: str) -> Tuple[Dict[str, Any], str]:
     return result, content
 
 
-def load_skill_from_dir(skill_dir: str) -> Optional[SkillDefinition]:
-    """从指定目录加载 SKILL.md，返回 SkillDefinition。"""
+def load_skill_from_dir(skill_dir: str, group: str = "") -> Optional[SkillDefinition]:
+    """从指定目录加载 SKILL.md，返回 SkillDefinition。
+
+    Args:
+        skill_dir: 技能目录路径。
+        group: 所属分组名称（空表示无分组）。
+    """
     skill_md = os.path.join(skill_dir, "SKILL.md")
     if not os.path.isfile(skill_md):
         return None
@@ -172,6 +189,7 @@ def load_skill_from_dir(skill_dir: str) -> Optional[SkillDefinition]:
         description=description,
         content=content or raw,
         filepath=os.path.abspath(skill_md),
+        group=group,
         license=license_val,
         compatibility=compatibility,
         version=version,
@@ -180,6 +198,59 @@ def load_skill_from_dir(skill_dir: str) -> Optional[SkillDefinition]:
         related_skills=related_skills,
         metadata=metadata,
     )
+
+
+def _load_group_skills(base_dir: str, group_name: str, loaded_names: Set[str]) -> Tuple[List[SkillDefinition], Optional[SkillGroup]]:
+    """递归加载一个分组目录下的所有技能。
+
+    Args:
+        base_dir: 分组目录路径。
+        group_name: 分组名称。
+        loaded_names: 已加载技能名集合（避免重复）。
+
+    Returns:
+        (skills_list, group_definition)
+        group_definition 为 None 表示隐式分组（无 SKILL.md）。
+    """
+    skills: List[SkillDefinition] = []
+    group_def: Optional[SkillGroup] = None
+
+    # 检查分组目录本身是否有 SKILL.md（作为分组入口技能）
+    if _has_skill_md(base_dir):
+        sd = load_skill_from_dir(base_dir, group="")
+        if sd is not None:
+            group_def = SkillGroup(name=group_name, description=sd.description)
+            # 把分组入口也注册为可用的技能（name=分组名，group=分组名）
+            entry_sd = SkillDefinition(
+                name=group_name,
+                description=sd.description,
+                content=sd.content,
+                filepath=sd.filepath,
+                group=group_name,
+                tags=sd.tags,
+                metadata=sd.metadata,
+            )
+            loaded_names.add(group_name)
+            skills.append(entry_sd)
+
+    # 扫描子目录
+    for sub_name in _list_subdirs(base_dir):
+        sub_dir = os.path.join(base_dir, sub_name)
+        if not _has_skill_md(sub_dir):
+            continue
+        if sub_name in loaded_names:
+            continue
+        skill = load_skill_from_dir(sub_dir, group=group_name)
+        if skill is not None:
+            loaded_names.add(sub_name)
+            skills.append(skill)
+
+    if not group_def:
+        group_def = SkillGroup(name=group_name)
+
+    desc_suffix = f" — {group_def.description}" if group_def.description else ""
+    logger.info(f"[SkillDiscovery] 分组 [{group_name}]{desc_suffix} ({len(skills)} 个子技能)")
+    return skills, group_def
 
 
 def _dir_mtime(basedir: str) -> float:
@@ -210,13 +281,24 @@ def _should_rescan(base: str) -> bool:
 
 
 def discover_skills(extra_dirs: Optional[List[str]] = None, force: bool = False) -> List[SkillDefinition]:
-    """从 ~/.agents/skills 发现所有 SKILL.md 技能。
+    """从 ~/.agents/skills 发现所有 SKILL.md 技能（支持递归分组结构）。
+
+    目录结构约定：
+        ~/.agents/skills/
+            lark/                          ← 分组目录（显式：有 SKILL.md 且有子技能）
+                SKILL.md                   ← 可选，分组描述
+                lark-im/
+                    SKILL.md
+                lark-calendar/
+                    SKILL.md
+            local-search/                  ← 平铺技能（有 SKILL.md，无子技能）
+                SKILL.md
 
     Args:
         extra_dirs: 额外扫描目录（运行时传入，用于测试或动态加载）。
 
     Returns:
-        SkillDefinition 列表。
+        SkillDefinition 列表（所有技能扁平化，分组信息在 group 字段）。
     """
     search_paths: List[str] = []
     seen_paths: set[str] = set()
@@ -249,18 +331,66 @@ def discover_skills(extra_dirs: Optional[List[str]] = None, force: bool = False)
             continue
 
         base_results: List[SkillDefinition] = []
-        for skill_name in _list_skill_names(base):
-            if skill_name in loaded_names:
-                continue
-            skill = load_skill_from_dir(os.path.join(base, skill_name))
-            if skill is not None:
-                loaded_names.add(skill_name)
-                results.append(skill)
-                base_results.append(skill)
-                logger.info(
-                    f"[SkillDiscovery] 发现技能 [{skill.name}] ({skill.filepath})"
-                )
 
+        for entry_name in _list_subdirs(base):
+            entry_dir = os.path.join(base, entry_name)
+
+            # 情况 A: 分组目录（包含子技能）
+            if _is_category_dir(entry_dir):
+                sub_skills, group_def = _load_group_skills(entry_dir, entry_name, loaded_names)
+                base_results.extend(sub_skills)
+                # 如果分组有 SKILL.md，其本身也会作为 group_def 注册（作为分组元信息）
+                # 不把分组本身当作普通技能添加到列表中
+
+            # 情况 B: 平铺技能（有 SKILL.md，不是分组）
+            elif _has_skill_md(entry_dir):
+                if entry_name in loaded_names:
+                    continue
+                skill = load_skill_from_dir(entry_dir, group="")
+                if skill is not None:
+                    loaded_names.add(entry_name)
+                    base_results.append(skill)
+
+            # 情况 C: 隐式分组（无 SKILL.md 但有子技能）
+            else:
+                has_sub_skills = any(
+                    _has_skill_md(os.path.join(entry_dir, sub))
+                    for sub in _list_subdirs(entry_dir)
+                )
+                if has_sub_skills:
+                    sub_skills, _ = _load_group_skills(entry_dir, entry_name, loaded_names)
+                    base_results.extend(sub_skills)
+
+        results.extend(base_results)
         _cache[base] = (time.time(), base_results)
 
     return results
+
+
+def discover_groups(extra_dirs: Optional[List[str]] = None, force: bool = False) -> List[SkillGroup]:
+    """发现技能分组（含子技能列表）。
+
+    返回 SkillGroup 列表，按分组名称排序。
+    无分组的技能归入 "other" 组。
+    """
+    skills = discover_skills(extra_dirs=extra_dirs, force=force)
+    groups_map: Dict[str, SkillGroup] = {}
+
+    for sd in skills:
+        g = sd.group or "_ungrouped"
+        if g not in groups_map:
+            groups_map[g] = SkillGroup(name=g)
+        groups_map[g].skills.append(sd)
+
+    # 按名称排序
+    result = []
+    for gname in sorted(groups_map.keys()):
+        if gname == "_ungrouped":
+            continue
+        groups_map[gname].skills.sort(key=lambda s: s.name)
+        result.append(groups_map[gname])
+    if "_ungrouped" in groups_map:
+        groups_map["_ungrouped"].skills.sort(key=lambda s: s.name)
+        result.append(groups_map["_ungrouped"])
+
+    return result

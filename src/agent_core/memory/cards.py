@@ -85,6 +85,7 @@ class AgentMemoryCard:
     trigger_count: int = 0
     scene_tag: Optional[str] = None
     namespace: Optional[str] = None
+    l1_code: int = 0
 
     experience_notes: List[str] = field(default_factory=list)
 
@@ -107,6 +108,7 @@ class AgentMemoryCard:
             trigger_count=int(data.get("trigger_count") or 0),
             scene_tag=data.get("scene_tag"),
             namespace=data.get("namespace"),
+            l1_code=int(data.get("l1_code") or 0),
             experience_notes=_safe_list(data.get("experience_notes")),
         )
 

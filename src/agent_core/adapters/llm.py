@@ -22,10 +22,17 @@ def _make_verify():
             return path
     except Exception:
         pass
+    env_cert = os.environ.get("SSL_CERT_FILE", "")
+    if env_cert and os.path.isfile(env_cert):
+        return env_cert
     if getattr(sys, "frozen", False):
         bundled = os.path.join(sys._MEIPASS, "certifi", "cacert.pem")
         if os.path.isfile(bundled):
             return bundled
+        for root, _dirs, files in os.walk(sys._MEIPASS):
+            if "cacert.pem" in files:
+                return os.path.join(root, "cacert.pem")
+        return False
     return True
 
 

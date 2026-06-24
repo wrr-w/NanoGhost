@@ -56,6 +56,12 @@ def _preparse_instance_dir(argv: List[str]) -> str:
 def _bootstrap_instance(argv: List[str]) -> None:
     instance_dir = _clean_env_value(_preparse_instance_dir(argv))
     if not instance_dir:
+        if getattr(sys, "frozen", False):
+            exe_dir = os.path.dirname(sys.executable)
+            env_path = os.path.join(exe_dir, ".env")
+            if os.path.isfile(env_path):
+                load_dotenv(dotenv_path=env_path)
+                return
         load_dotenv()
         return
 
@@ -74,7 +80,7 @@ def _bootstrap_instance(argv: List[str]) -> None:
 
     dotenv_path = os.path.join(instance_dir, ".env")
     if os.path.isfile(dotenv_path):
-        load_dotenv(dotenv_path=dotenv_path)
+        load_dotenv(dotenv_path=dotenv_path, override=True)
     else:
         load_dotenv()
 
@@ -95,6 +101,13 @@ if _inst_dir:
         "%(asctime)s | %(levelname)-5s | %(name)s | %(message)s"
     ))
     logging.getLogger().addHandler(_fh)
+    if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+               for h in logging.getLogger().handlers):
+        _sh = logging.StreamHandler()
+        _sh.setFormatter(logging.Formatter(
+            "%(asctime)s | %(levelname)-5s | %(name)s | %(message)s"
+        ))
+        logging.getLogger().addHandler(_sh)
 logging.getLogger("openai").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("agent_core")

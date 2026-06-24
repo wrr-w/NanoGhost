@@ -5,7 +5,8 @@ import shutil
 import subprocess
 from typing import Any, Dict
 
-from agent_core.skill.discovery import AGENTS_SKILLS_DIR
+from agent_core.skill.discovery import AGENTS_SKILLS_DIR, discover_groups
+from agent_core.skill.models import SkillGroup
 
 from ..models import ToolResult
 
@@ -26,6 +27,20 @@ def _substitute_template_vars(text: str, skill_dir: str, session_id: str = "") -
     return _SKILL_TEMPLATE_RE.sub(_replace, text)
 
 
+def _resolve_skill_name(skill_name: str, registry) -> Any:
+    """解析技能名，支持层级格式（如 'lark/im' → 查找 name='lark-im'）。"""
+    sd = registry.get_skill_def(skill_name)
+    if sd is not None:
+        return sd
+    # 尝试层级名：lark/im → 查找 name 含 "im" 且 group="lark"
+    if "/" in skill_name:
+        parts = skill_name.split("/")
+        for sd in registry.list_skill_defs():
+            if sd.group == parts[0].strip() and sd.name == parts[1].strip():
+                return sd
+    return None
+
+
 def use_skill(args: Dict[str, Any], ctx: Dict[str, Any]) -> ToolResult:
     """Load a skill's SKILL.md, or read a supporting file within it."""
     skill_name = (args.get("name") or args.get("skill") or "").strip()
@@ -34,13 +49,13 @@ def use_skill(args: Dict[str, Any], ctx: Dict[str, Any]) -> ToolResult:
     agent = ctx.get("agent")
     if agent is None:
         return ToolResult(ok=False, error="Agent 不可用")
-    sd = agent.skill_registry.get_skill_def(skill_name)
+    sd = _resolve_skill_name(skill_name, agent.skill_registry)
     if sd is None:
         try:
             agent.discover_skills()
         except Exception:
             pass
-        sd = agent.skill_registry.get_skill_def(skill_name)
+        sd = _resolve_skill_name(skill_name, agent.skill_registry)
     yield_event = ctx.get("yield_event")
     if sd is None:
         available = ", ".join(agent.skill_registry.all_skill_names())
@@ -113,8 +128,32 @@ USE_SKILL_DEF = {
 }
 
 
+def _format_skills_tree(groups: list[SkillGroup]) -> str:
+    """按分组树形格式化技能列表。"""
+    if not groups:
+        return "(无可用技能)"
+
+    total = sum(len(g.skills) for g in groups)
+    lines = [f"可用技能 ({total})，按分组:"]
+
+    for group in groups:
+        if not group.skills:
+            continue
+        gname = group.name
+        if gname == "_ungrouped":
+            lines.append("")
+            lines.append("  [未分组]")
+        else:
+            desc = f": {group.description}" if group.description else ""
+            lines.append("")
+            lines.append(f"  📁 {gname}{desc}")
+        for sd in group.skills:
+            lines.append(f"    - {sd.name}: {sd.description}")
+    return "\n".join(lines)
+
+
 def skills_list(args: Dict[str, Any], ctx: Dict[str, Any]) -> ToolResult:
-    """List all available skills (name + description only)."""
+    """List all available skills grouped by category (tree structure)."""
     agent = ctx.get("agent")
     if agent is None:
         return ToolResult(ok=False, error="Agent 不可用")
@@ -122,6 +161,16 @@ def skills_list(args: Dict[str, Any], ctx: Dict[str, Any]) -> ToolResult:
         agent.discover_skills()
     except Exception:
         pass
+
+    # 尝试按分组展示
+    try:
+        groups = discover_groups()
+        if groups:
+            return ToolResult(ok=True, data=_format_skills_tree(groups))
+    except Exception:
+        pass
+
+    # 兜底：平铺展示
     defs = agent.skill_registry.list_skill_defs()
     if not defs:
         return ToolResult(ok=True, data="(无可用技能)")
@@ -186,13 +235,20 @@ SKILL_INSTALL_DEF = {
 }
 
 
+def _skill_path(name: str) -> str:
+    """解析技能名到磁盘路径，支持层级分组（如 'lark/lark-im'）。"""
+    # 移除分组前缀中的组名层级，只取最后一段作为目录名
+    safe_name = name.replace("/", os.sep)
+    return os.path.join(AGENTS_SKILLS_DIR, safe_name)
+
+
 def skill_manage(args: Dict[str, Any], ctx: Dict[str, Any]) -> ToolResult:
     """Manage skills: create, patch, delete, write/remove supporting files."""
     action = (args.get("action") or "").strip()
     name = (args.get("name") or "").strip()
     if not action or not name:
         return ToolResult(ok=False, error="缺少 action 或 name 参数")
-    skill_dir = os.path.join(AGENTS_SKILLS_DIR, name)
+    skill_dir = _skill_path(name)
     skill_md = os.path.join(skill_dir, "SKILL.md")
     agent = ctx.get("agent")
     if action == "create":
@@ -272,7 +328,29 @@ def skill_manage(args: Dict[str, Any], ctx: Dict[str, Any]) -> ToolResult:
             return ToolResult(ok=False, error=f"文件不存在: {file_path}", signal="__continue__")
         os.remove(target)
         return ToolResult(ok=True, data=f"文件已删除: {target}", signal="__continue__")
-    return ToolResult(ok=False, error=f"未知 action: {action}（可选: create/patch/delete/write_file/remove_file）",
+    if action == "move":
+        target_group = (args.get("target_group") or "").strip()
+        if not target_group:
+            return ToolResult(ok=False, error="缺少 target_group 参数（目标分组名）")
+        if not os.path.isdir(skill_dir):
+            return ToolResult(ok=False, error=f"技能 [{name}] 不存在", signal="__continue__")
+        target_dir = os.path.join(AGENTS_SKILLS_DIR, target_group, name)
+        if os.path.isdir(target_dir):
+            return ToolResult(ok=False, error=f"目标路径已存在: {target_dir}", signal="__continue__")
+        os.makedirs(os.path.dirname(target_dir), exist_ok=True)
+        shutil.move(skill_dir, target_dir)
+        if agent:
+            try:
+                agent.discover_skills()
+            except Exception:
+                pass
+        return ToolResult(
+            ok=True,
+            data=f"技能 [{name}] 已移至分组 [{target_group}]: {target_dir}",
+            signal="__continue__",
+        )
+    return ToolResult(ok=False,
+                      error=f"未知 action: {action}（可选: create/patch/delete/move/write_file/remove_file）",
                       signal="__continue__")
 
 
@@ -281,12 +359,16 @@ SKILL_MANAGE_DEF = {
     "properties": {
         "action": {
             "type": "string",
-            "enum": ["create", "patch", "delete", "write_file", "remove_file"],
-            "description": "操作类型: create（新建技能）/ patch（修改 SKILL.md）/ delete（删除技能）/ write_file（写支持文件）/ remove_file（删除支持文件）",
+            "enum": ["create", "patch", "delete", "move", "write_file", "remove_file"],
+            "description": "操作类型: create（新建技能）/ patch（修改 SKILL.md）/ delete（删除技能）/ move（移入分组）/ write_file（写支持文件）/ remove_file（删除支持文件）",
         },
         "name": {
             "type": "string",
             "description": "技能名称（同时也是目录名）",
+        },
+        "target_group": {
+            "type": "string",
+            "description": "move 时使用：目标分组名（如 lark），将技能移入该分组目录",
         },
         "content": {
             "type": "string",

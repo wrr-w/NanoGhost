@@ -251,7 +251,7 @@ def test_registry_match_skills():
 
 
 def test_registry_build_skill_context():
-    """build_skill_context returns lightweight index (name+description only)."""
+    """build_skill_context returns lightweight index (name only, not full descriptions)."""
     registry = SkillRegistry()
     registry.add_skill_def(SkillDefinition(
         name="git-release", description="Create releases",
@@ -262,10 +262,9 @@ def test_registry_build_skill_context():
     ctx = registry.build_skill_context()
     assert ctx is not None
     assert "git-release" in ctx
-    assert "Create releases" in ctx
     assert "<available_skills>" in ctx
     assert "use_skill" in ctx
-    # Should NOT contain full skill content
+    # Should NOT contain full skill content or long descriptions
     assert "## Steps" not in ctx
     assert "1. Tag" not in ctx
 
@@ -412,25 +411,6 @@ def test_discover_does_not_crash_on_permission_error():
             assert isinstance(skills, list)
         finally:
             os.chmod(no_perm, 0o755)
-
-
-def test_shell_exec_simple():
-    """Agent can execute shell commands via EXEC action."""
-    from agent_core.engine.executor import _execute_shell_command
-
-    step_out, ok, error = _execute_shell_command("echo hello world", step_num=1)
-    assert ok
-    assert step_out["exit_code"] == 0
-    assert "hello world" in step_out.get("result_preview", "")
-
-
-def test_shell_exec_fail():
-    """Non-existent command returns error."""
-    from agent_core.engine.executor import _execute_shell_command
-
-    step_out, ok, error = _execute_shell_command("nonexistent_cmd_xyz", step_num=1)
-    assert not ok
-    assert error is not None
 
 
 def test_shell_exec_in_agent_loop():

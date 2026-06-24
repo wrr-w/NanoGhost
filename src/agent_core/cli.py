@@ -26,9 +26,11 @@ def _instance_dir_from_args(args) -> Path:
     inst = inst.strip()
     if not inst:
         raise SystemExit("需要指定实例目录：-I <INSTANCE_DIR> 或设置 INSTANCE_DIR")
+    # 绝对路径 / 含路径分隔符 → 直接使用
     p = Path(os.path.expanduser(inst))
-    if p.is_absolute() or p.exists() or any(x in inst for x in ("/", "\\", ":")):
+    if p.is_absolute() or any(x in inst for x in ("/", "\\", ":")):
         return Path(os.path.abspath(str(p)))
+    # 否则从配置的根目录查找/创建
     return (_instances_root() / inst).resolve()
 
 
@@ -61,7 +63,18 @@ def _find_run_py() -> Path:
         pp = Path(p).expanduser().resolve()
         if pp.is_file():
             return pp
+    # 从 CWD 向上搜索
     cur = Path.cwd().resolve()
+    for _ in range(12):
+        cand = cur / "run.py"
+        if cand.is_file():
+            return cand
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    # FALLBACK: 从 exe 所在目录搜索（onedir 模式）
+    exe_dir = Path(sys.argv[0]).resolve().parent
+    cur = exe_dir
     for _ in range(12):
         cand = cur / "run.py"
         if cand.is_file():
@@ -539,7 +552,20 @@ def _cmd_mcp_reload(args) -> int:
     return 0
 
 
+def _load_dotenv_frozen() -> None:
+    """Load .env from exe directory (frozen) or CWD (source)."""
+    from dotenv import load_dotenv
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(sys.executable)
+        env_path = os.path.join(exe_dir, ".env")
+        if os.path.isfile(env_path):
+            load_dotenv(dotenv_path=env_path)
+            return
+    load_dotenv()
+
+
 def main(argv: list[str] | None = None) -> int:
+    _load_dotenv_frozen()
     parser = argparse.ArgumentParser(
         prog="nanoghost",
         description="NanoGhost -- multi-instance LLM Agent framework with Feishu/MCP/Gateway support",
@@ -640,6 +666,11 @@ def main(argv: list[str] | None = None) -> int:
             inst = Path(os.path.abspath(str(p)))
         else:
             inst = (_instances_root() / inst_raw).resolve()
+        _load_dotenv_frozen()
+        _inst_env = inst / ".env"
+        if _inst_env.is_file():
+            from dotenv import load_dotenv as _ld
+            _ld(dotenv_path=str(_inst_env), override=True)
         from gateway_server import serve_gateway
         serve_gateway(host=str(args.host), port=int(args.port), instance_dir=inst)
         return 0
@@ -660,9 +691,16 @@ def _run_agent_mode() -> None:
     # Ensure SSL certs are available in PyInstaller frozen environment
     try:
         import certifi as _certifi
-        os.environ["SSL_CERT_FILE"] = _certifi.where()
+        _cert_path = _certifi.where()
+        if os.path.isfile(_cert_path):
+            os.environ["SSL_CERT_FILE"] = _cert_path
     except Exception:
         pass
+    if not os.environ.get("SSL_CERT_FILE"):
+        if getattr(sys, "frozen", False):
+            _bundled = os.path.join(sys._MEIPASS, "certifi", "cacert.pem")
+            if os.path.isfile(_bundled):
+                os.environ["SSL_CERT_FILE"] = _bundled
 
     # Trigger run.py module-level bootstrap (env loading, log setup, etc.)
     import run  # noqa: F401

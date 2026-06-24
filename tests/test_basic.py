@@ -82,6 +82,12 @@ class MockDatabase(DatabasePort):
     def delete_chat_mentions(self, chat_id):
         pass
 
+    def add_session_image(self, session_id, base64):
+        return f"img_{len([k for k in self.images_cache if k.startswith(session_id)])}" if hasattr(self, "images_cache") else "img_0"
+
+    def get_session_images(self, session_id):
+        return []
+
 class MockLLM(LLMPort):
     def __init__(self, responses=None):
         self.responses = responses or []

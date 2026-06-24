@@ -22,6 +22,7 @@ from .api import (
     extract_image_keys_from_event_message,
     extract_text_from_event_message,
     get_message_by_id,
+    get_thread_messages,
     get_user_name,
     parse_message_content,
 )
@@ -91,16 +92,72 @@ class FeishuTurnParser:
         if not sender_name:
             sender_name = "用户"
 
-        # ── 回复原文 ──
+        # ── 回复原文：获取被回复的消息 + 发送者 ──
         reply_to_text = ""
         if parent_id:
             try:
                 reply_msg = get_message_by_id(parent_id)
                 if reply_msg:
-                    reply_to_text = parse_message_content(
+                    reply_content = parse_message_content(
                         reply_msg.get("content", ""),
                         reply_msg.get("msg_type", "text"),
                     )
+                    reply_sender = reply_msg.get("sender", {}) or {}
+                    reply_sender_id = reply_sender.get("id", "") or ""
+                    reply_sender_name = get_user_name(reply_sender_id) or reply_sender_id[:12] or "用户"
+                    if reply_content:
+                        reply_to_text = f"{reply_sender_name}: {reply_content}"
+                        logger.info(f"[Feishu Turn] 引用消息 parent_id={parent_id}: {reply_to_text[:100]}")
+                    else:
+                        reply_to_text = f"{reply_sender_name}: [无法解析引用消息内容]"
+                else:
+                    reply_to_text = "[无法获取引用消息内容]"
+            except Exception as e:
+                logger.warning(f"[Feishu Turn] 获取引用消息失败 parent_id={parent_id}: {e}")
+                reply_to_text = "[无法获取引用消息内容]"
+
+        # ── 话题/回复上下文 ──
+        thread_context = ""
+        if thread_id:
+            try:
+                thread_msgs = get_thread_messages(thread_id, exclude_message_id=message_id)
+                if thread_msgs:
+                    lines = []
+                    for tm in thread_msgs[-20:]:
+                        name = tm.get("sender_name", "")
+                        ct = tm.get("content", "")
+                        if ct:
+                            lines.append(f"{name}: {ct[:200]}")
+                    thread_context = "\n".join(lines)
+                    logger.info(f"[Feishu Turn] 获取话题消息成功 thread_id={thread_id}: {len(thread_msgs)}条")
+            except Exception as e:
+                logger.warning(f"[Feishu Turn] 获取话题消息失败 thread_id={thread_id}: {e}")
+        elif root_id:
+            try:
+                root_msg = get_message_by_id(root_id)
+                if root_msg:
+                    root_content = parse_message_content(
+                        root_msg.get("content", ""),
+                        root_msg.get("msg_type", "text"),
+                    )
+                    root_sender = root_msg.get("sender", {}) or {}
+                    root_sender_id = root_sender.get("id", "") or ""
+                    root_sender_name = get_user_name(root_sender_id) or root_sender_id[:12] or "用户"
+                    if root_content:
+                        thread_context = f"{root_sender_name}: {root_content[:200]}"
+            except Exception as e:
+                logger.warning(f"[Feishu Turn] 获取根消息失败 root_id={root_id}: {e}")
+
+        if thread_context:
+            reply_to_text = f"[话题上下文]\n{thread_context}" + (f"\n[当前回复: {reply_to_text}]" if reply_to_text else "")
+
+        # ── 群聊名称（API 查） ──
+        chat_name = chat_id
+        if chat_type == "group":
+            try:
+                api_chat_name = get_chat_name(chat_id)
+                if api_chat_name:
+                    chat_name = api_chat_name
             except Exception:
                 pass
 
@@ -110,7 +167,7 @@ class FeishuTurnParser:
             sender_id=sender_open_id,
             sender_name=sender_name or sender_open_id,
             chat_id=chat_id,
-            chat_name=chat_id,
+            chat_name=chat_name,
             chat_type=chat_type,
             thread_id=thread_id,
         )
@@ -133,7 +190,7 @@ class FeishuTurnParser:
 
         return source, ctx
 
-    def is_group_mention_bot(self, event_data: dict) -> bool:
+    def is_group_mention_bot(self, event_data: dict, bot_id: str = "", bot_name: str = "") -> bool:
         """群聊中检查是否 @了机器人或 @all。"""
         event = event_data.get("event", {})
         message = event.get("message", {})
@@ -142,7 +199,20 @@ class FeishuTurnParser:
             return True  # 私聊不需要 @
         mentions = message.get("mentions") or []
         if len(mentions) > 0:
-            return True
+            # 无任何身份信息时兼容旧行为（响应所有 @）
+            if not bot_id and not bot_name:
+                return True
+            for m in mentions:
+                mid = m.get("id") or {}
+                oid = str(mid.get("open_id", "") or "") or str(mid.get("user_id", "") or "")
+                # 优先 open_id 精确匹配
+                if bot_id and oid == bot_id:
+                    return True
+                # fallback: name 匹配（_ensure_bot_id 可能失败时兜底）
+                name = str(m.get("name", "") or "").strip()
+                if bot_name and name == bot_name:
+                    return True
+            return False  # 有 @但没 @到本机器人
         # @all 时 mentions 列表可能为空，检查 content 中的 @ 标记
         content = message.get("content") or ""
         if "@_all" in content or "@所有人" in content:

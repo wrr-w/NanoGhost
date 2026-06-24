@@ -74,12 +74,13 @@ def build_agent_messages_with_history(
     user_message: str,
     db: DatabasePort,
     user_images: Optional[List[str]] = None,
-    image_urls: Optional[List[str]] = None,
+    stored_image_ids: Optional[List[str]] = None,
     llm: Optional[LLMPort] = None,
     namespace: Optional[str] = None,
     history_max_messages: int = 200,
     history_max_tokens: int = 200_000,
     root_id: Optional[str] = None,
+    supports_vision: bool = False,
 ) -> List[Dict[str, Any]]:
     """拼装带会话历史 + 记忆召回的 messages。
 
@@ -88,6 +89,8 @@ def build_agent_messages_with_history(
         history_max_messages: 保留的最大历史消息条数。
         history_max_tokens: 历史消息的估算 token 上限，超出从旧消息截断。
         root_id: 话题根消息 ID。非空时只加载同 root_id 的历史消息。
+        supports_vision: 当前 LLM 是否支持多模态图片输入。
+        stored_image_ids: 本次入库的 session 图片 ID 列表。
     """
     out: List[Dict[str, Any]] = [{"role": "system", "content": [{"type": "text", "text": sys_prompt}]}]
 
@@ -130,6 +133,14 @@ def build_agent_messages_with_history(
         mem_text = "【历史相似流程】\n" + "\n".join(lines) + "\n\n可参考这些流程。注意踩坑提醒。"
         out.append({"role": "system", "content": [{"type": "text", "text": mem_text}]})
 
+    # ---- session 图片上下文 ----
+    if stored_image_ids:
+        idx_text = ", ".join(stored_image_ids)
+        out.append({
+            "role": "system",
+            "content": [{"type": "text", "text": f"【本次 session 图片】\n已存储图片: {idx_text}\n可用 recall_image 工具查看。\n"}],
+        })
+
     history_msgs: List[Dict[str, Any]] = []
     if session_id:
         history = db.get_agent_messages(session_id, root_id=root_id)
@@ -158,11 +169,11 @@ def build_agent_messages_with_history(
                 content = (m.get("content") or "").strip()
                 if role == "user":
                     if type == "image":
-                        img_base64 = images_cache.get(content, content)
-                        history_msgs.append({"role": "user", "content": [
-                            {"type": "image_url", "image_url": {"url": img_base64}},
-                            {"type": "text", "text": f"_image_reference: {content}"},
-                        ]})
+                        if supports_vision:
+                            img_base64 = images_cache.get(content, content)
+                            history_msgs.append({"role": "user", "content": [
+                                {"type": "image_url", "image_url": {"url": img_base64}},
+                            ]})
                     else:
                         history_msgs.append({"role": "user", "content": [{"type": "text", "text": content}]})
                 else:
@@ -195,11 +206,9 @@ def build_agent_messages_with_history(
     out.extend(history_msgs)
 
     current_user_content = []
-    if user_images:
-        for i, img in enumerate(user_images):
+    if user_images and supports_vision:
+        for img in user_images:
             current_user_content.append({"type": "image_url", "image_url": {"url": img}})
-            if image_urls and i < len(image_urls):
-                current_user_content.append({"type": "text", "text": f"_image_reference: {image_urls[i]}"})
 
     if user_message:
         current_user_content.append({

@@ -2,8 +2,8 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, Set
 
-from agent_core.skill.discovery import discover_skills
-from agent_core.skill.models import SkillDefinition
+from agent_core.skill.discovery import discover_skills, discover_groups
+from agent_core.skill.models import SkillDefinition, SkillGroup
 from agent_core.utils import load_yaml_subset
 
 logger = logging.getLogger("agent_core")
@@ -62,7 +62,17 @@ class SkillRegistry:
                 self._skill_defs[sd.name] = sd
                 count += 1
         if count > 0:
-            logger.info(f"[SkillRegistry] 共发现 {count} 个 SKILL.md 技能")
+            groups = self.list_skill_defs_by_group()
+            group_names = [g.name for g in groups if g.name != "_ungrouped"]
+            standalone = [g.name for g in groups if g.name == "_ungrouped"]
+            summary_parts = []
+            if group_names:
+                summary_parts.append(f"分组: [{', '.join(group_names)}]")
+            if standalone:
+                flat = [sd.name for sd in groups[0].skills] if groups and groups[0].name == "_ungrouped" else []
+                if flat:
+                    summary_parts.append(f"独立: [{', '.join(flat)}]")
+            logger.info(f"[SkillRegistry] 可用技能: {'; '.join(summary_parts)}（共 {count} 个）")
         return count
 
     def get_skill_def(self, name: str) -> Optional[SkillDefinition]:
@@ -147,30 +157,68 @@ class SkillRegistry:
             f"{sd.content}\n"
         )
 
+    def list_skill_defs_by_group(self) -> List[SkillGroup]:
+        """从注册表按分组返回技能列表（树形结构，不扫描磁盘）。"""
+        all_defs = self.list_skill_defs()
+        groups_map: Dict[str, SkillGroup] = {}
+        for sd in all_defs:
+            g = sd.group or "_ungrouped"
+            if g not in groups_map:
+                desc = ""
+                # 从分组入口技能（name=group 且 group=group）提取描述
+                if sd.name == g and sd.group == g:
+                    desc = sd.description
+                groups_map[g] = SkillGroup(name=g, description=desc)
+            groups_map[g].skills.append(sd)
+        result = []
+        for gname in sorted(groups_map.keys()):
+            if gname == "_ungrouped":
+                continue
+            groups_map[gname].skills.sort(key=lambda s: s.name)
+            result.append(groups_map[gname])
+        if "_ungrouped" in groups_map:
+            groups_map["_ungrouped"].skills.sort(key=lambda s: s.name)
+            result.append(groups_map["_ungrouped"])
+        return result
+
     def build_skill_context(self) -> Optional[str]:
         """构建轻量技能索引，供注入 system prompt 使用。
 
-        只列出技能名称和描述，模型按需通过
-        `{{"use_skill": "skill-name"}}` 加载完整内容。
-
-        与 Hermes/opencode 的 <available_skills> 模式兼容。
+        按分组输出树形结构。模型按需通过
+        `use_skill(name="skill-name")` 加载完整内容。
 
         Returns:
             格式化的索引文本块，或 None（无可用技能时）。
         """
-        all_defs = self.list_skill_defs()
-        if not all_defs:
+        all_groups = self.list_skill_defs_by_group()
+        if not all_groups:
             return None
 
         parts: List[str] = [
-            "## 可用技能 (Skills)",
-            "如需使用某个技能，调用 use_skill 工具加载其完整指令。",
+            "## 可用技能 (Skills) — 树状组织",
+            "",
+            "技能按「分组 → 子技能」树状组织，每层都有 schema 描述。",
+            "",
+            "导航方式：",
+            "  1. 看顶层分组名 + 描述 → 判断是否需要",
+            "  2. `use_skill(name=\"分组名\")` → 展开下一层，看到子技能列表",
+            "  3. `use_skill(name=\"子技能名\")` → 获取完整指令执行",
+            "  4. 如果还有更深层，重复第 2 步",
             "",
             "<available_skills>",
         ]
-        for sd in all_defs:
-            skill_dir = os.path.dirname(sd.filepath)
-            parts.append(f"  - **{sd.name}**: {sd.description} ({skill_dir}/)")
+
+        for group in all_groups:
+            if not group.skills:
+                continue
+            gname = group.name
+            if gname == "_ungrouped":
+                for sd in group.skills:
+                    desc = f": {sd.description}" if sd.description else ""
+                    parts.append(f"  📄 **{sd.name}**{desc}")
+                continue
+            desc = f": {group.description}" if group.description else ""
+            parts.append(f"  📁 **{gname}**{desc}  `use_skill(name=\"{gname}\")`")
         parts.append("</available_skills>")
         parts.append("")
 

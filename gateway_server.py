@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import signal
 import subprocess
 import sys
@@ -454,6 +455,36 @@ def _auto_start_workers(state: GatewayState) -> None:
             _log(f"[Gateway] channel '{name}' disabled in channel_directory.json, skip{hint}")
 
 
+
+def _start_worker_health_check(state: GatewayState) -> None:
+    """后台线程：每 30 秒检查一次 worker 状态，挂了自动重启。"""
+
+    def _check():
+        while True:
+            time.sleep(30)
+            try:
+                cfg = load_channel_config(state.instance_dir)
+                ch = cfg.get("channels", {}) if isinstance(cfg.get("channels"), dict) else {}
+                for name, channel_cfg in ch.items():
+                    if not isinstance(channel_cfg, dict):
+                        continue
+                    enabled = bool(channel_cfg.get("enabled"))
+                    reg = CHANNEL_REGISTRY.get(name, {})
+                    wk = reg.get("worker_key")
+                    if not wk or not enabled:
+                        continue
+                    st = state.workers.worker_status(wk)
+                    if not st.get("running"):
+                        _log(f"[HealthCheck] {wk} not running (pid={st.get('pid')}), restarting...")
+                        r = state.workers.start_worker(wk, env_overrides={"AGENT_MODE": wk})
+                        _log(f"[HealthCheck] restart {wk}: ok={r.get('ok')} pid={r.get('pid')}")
+            except Exception:
+                logger.exception("[HealthCheck] check worker error")
+
+    t = threading.Thread(target=_check, daemon=True, name="worker-healthcheck")
+    t.start()
+
+
 def serve_gateway(*, host: str, port: int, instance_dir: Path) -> None:
     print(_banner(host, port, instance_dir))
     print(f"  NanoGhost gateway starting on {host}:{port}...\n")
@@ -461,6 +492,7 @@ def serve_gateway(*, host: str, port: int, instance_dir: Path) -> None:
     setattr(httpd, "state", GatewayState(instance_dir))
     _install_signal_handlers(httpd)
     _auto_start_workers(httpd.state)
+    _start_worker_health_check(httpd.state)
     try:
         httpd.serve_forever()
     finally:

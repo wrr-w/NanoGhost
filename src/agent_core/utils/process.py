@@ -15,12 +15,42 @@ def pid_exists(pid: int) -> bool:
             return False
     try:
         import ctypes
-        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        h = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, int(pid))
-        if not h:
+        from ctypes import wintypes
+
+        TH32CS_SNAPPROCESS = 0x0002
+        INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
+
+        class PROCESSENTRY32(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", ctypes.c_long),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", ctypes.c_char * 260),
+            ]
+
+        kernel32 = ctypes.windll.kernel32
+        snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if snapshot == INVALID_HANDLE_VALUE:
             return False
-        ctypes.windll.kernel32.CloseHandle(h)
-        return True
+
+        try:
+            pe = PROCESSENTRY32()
+            pe.dwSize = ctypes.sizeof(PROCESSENTRY32)
+            if not kernel32.Process32First(snapshot, ctypes.byref(pe)):
+                return False
+            while True:
+                if pe.th32ProcessID == int(pid):
+                    return True
+                if not kernel32.Process32Next(snapshot, ctypes.byref(pe)):
+                    return False
+        finally:
+            kernel32.CloseHandle(snapshot)
     except Exception:
         return False
 

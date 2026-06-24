@@ -1,11 +1,65 @@
 import logging
-from typing import Any, Dict
-
-from agent_core.engine.executor import _execute_shell_command
+import os
+import subprocess
+from typing import Any, Dict, Optional, Tuple
 
 from ..models import ToolResult
 
 logger = logging.getLogger("agent_core")
+
+
+def _execute_shell_command(
+    command: str,
+    step_num: int,
+    timeout: int = 30,
+    workdir: Optional[str] = None,
+) -> Tuple[Dict, bool, Optional[str]]:
+    """执行本地 shell 命令。"""
+    logger.info(f"[ShellExec] step {step_num}: {command[:200]}")
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=workdir or os.getcwd(),
+        )
+        stdout, stderr = proc.communicate(timeout=timeout)
+        ok = proc.returncode == 0
+        stdout = (stdout or b"").decode("utf-8", errors="replace")
+        stderr = (stderr or b"").decode("utf-8", errors="replace")
+        preview = ""
+        if stdout:
+            preview = stdout[:4000]
+            if len(stdout) > 4000:
+                preview += "\n…（输出已截断）"
+        if stderr:
+            if preview:
+                preview += "\n--- stderr ---\n"
+            preview += stderr[:2000]
+            if len(stderr) > 2000:
+                preview += "\n…（stderr 已截断）"
+        step_out = {
+            "step": step_num, "method": "EXEC", "path": command,
+            "ok": ok, "exit_code": proc.returncode, "result_preview": preview,
+        }
+        return step_out, ok, None if ok else f"exit code {proc.returncode}"
+    except subprocess.TimeoutExpired:
+        if proc is not None:
+            try:
+                proc.kill()
+                if os.name == "nt":
+                    import subprocess as _sp
+                    _sp.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, timeout=5)
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+        return {"step": step_num, "method": "EXEC", "path": command, "ok": False, "error": f"命令超时（{timeout}秒）", "exit_code": -1}, False, f"命令超时（{timeout}秒）"
+    except FileNotFoundError as e:
+        return {"step": step_num, "method": "EXEC", "path": command, "ok": False, "error": f"命令未找到: {e}"}, False, str(e)
+    except Exception as e:
+        return {"step": step_num, "method": "EXEC", "path": command, "ok": False, "error": str(e)}, False, str(e)
 
 
 def terminal(args: Dict[str, Any], ctx: Dict[str, Any]) -> ToolResult:

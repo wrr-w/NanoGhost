@@ -94,8 +94,9 @@ class MessageSource:
     def display_name(self) -> str:
         if self.sender_name:
             return self.sender_name
-        # 避免返回 raw open_id / union_id 等无意义 ID
-        if self.sender_id and not self.sender_id.startswith("ou_") and not self.sender_id.startswith("on_"):
+        if self.sender_id:
+            if self.sender_id.startswith("ou_") or self.sender_id.startswith("on_"):
+                return self.sender_id[-8:]
             return self.sender_id
         return "用户"
 
@@ -165,9 +166,10 @@ class ContextBuilder:
         user_text = builder.build_user_message(source, ctx)
     """
 
-    def __init__(self, bot_name: str = "", bot_id: str = ""):
+    def __init__(self, bot_name: str = "", bot_id: str = "", lark_cli_profile: str = ""):
         self._bot_name = bot_name.strip()
         self._bot_id = bot_id.strip()
+        self._lark_cli_profile = lark_cli_profile.strip()
         self._state_bot_keys: List[str] = []
         self._state_mentions: List[MentionRef] = []
 
@@ -176,12 +178,6 @@ class ContextBuilder:
     # ══════════════════════════════════════════════
 
     def build_session_context(self, source: MessageSource, *, shared_session: bool = False) -> str:
-        """Build session context block injected into system prompt.
-
-        When shared_session=True (group chat without per-user isolation),
-        do NOT pin a single user name - instead note it's multi-user.
-        Individual messages carry [sender_name] prefix for identification.
-        """
         lines = [
             "## 当前会话上下文",
             "",
@@ -189,13 +185,20 @@ class ContextBuilder:
         ]
         if self._bot_name:
             lines.append(f"**当前身份:** {self._bot_name}")
+            profile = self._lark_cli_profile or self._bot_name
+            lines.append(f"**lark-cli 身份:** {profile}")
+            lines.append(f"**使用规则:** 调用 lark-cli 时，必须加上 `--profile {profile}` 参数")
         if source.chat_topic:
             lines.append(f"**群公告/描述:** {source.chat_topic}")
         if shared_session:
-            lines.append("**会话类型:** 多人会话——每条消息前面会标注发送者姓名。")
+            lines.append("**会话类型:** 多人群聊——每条消息前面会标注发送者姓名。")
         else:
-            lines.append(f"**用户:** {source.display_name}")
-        lines.append(f"**连接的平台:** local, {source.platform}: 已连接 \u2713")
+            if source.sender_id:
+                lines.append(f"**用户:** {source.display_name} (ID: {source.sender_id})")
+            else:
+                lines.append(f"**用户:** {source.display_name}")
+        lines.append(f"**连接的平台:** local, {source.platform}: \u2713")
+
         return "\n".join(lines)
     def build_user_message(self, source: MessageSource, ctx: MessageContext) -> str:
         """构建最终发给 LLM 的 user message 文本。

@@ -13,13 +13,14 @@ def update_graph_ml(
     db: DatabasePort,
     namespace: Optional[str] = None,
 ) -> None:
-    """v3 Graph 写入：使用多层 OpCode 编码（L1~L4）。"""
     if not steps or len(steps) < 2:
+        logger.info(f"[AgentMemory][Graph] skip: need >=2 steps, got {len(steps) if steps else 0}")
         return
 
     from agent_core.memory.classifier import classify
 
     now = time.time()
+    edge_count = 0
     for i in range(len(steps) - 1):
         a = steps[i]
         b = steps[i + 1]
@@ -33,8 +34,12 @@ def update_graph_ml(
         if method_a == method_b and path_a == path_b:
             continue
 
-        code_a = classify(method_a, path_a, tool_a)
-        code_b = classify(method_b, path_b, tool_b)
+        try:
+            code_a = classify(method_a, path_a, tool_a)
+            code_b = classify(method_b, path_b, tool_b)
+        except Exception as e:
+            logger.error(f"[AgentMemory][Graph] classify error at step {i}: {e}")
+            continue
 
         for level in [1, 2, 3, 4]:
             edge = {
@@ -48,6 +53,7 @@ def update_graph_ml(
             }
             try:
                 db.save_ml_edge(edge)
+                edge_count += 1
             except Exception as e:
-                logger.error(f"[AgentFlowGraph] save_ml_edge error: {e}")
-                return
+                logger.error(f"[AgentMemory][Graph] save_ml_edge error at step {i} level {level}: {e}")
+    logger.info(f"[AgentMemory][Graph] saved {edge_count} edges from {len(steps)} steps")

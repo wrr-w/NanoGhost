@@ -53,9 +53,10 @@ class SqliteDatabase(DatabasePort):
                 CREATE TABLE IF NOT EXISTS agent_messages (
                     id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
                     role TEXT NOT NULL, type TEXT, content TEXT NOT NULL,
-                    steps_json TEXT, reasoning_content TEXT,
+                    steps_json TEXT, reasoning_content TEXT, root_id TEXT,
                     created_at REAL NOT NULL
-                );
+                );""")
+            conn.executescript("""
                 CREATE TABLE IF NOT EXISTS agent_images (
                     id TEXT PRIMARY KEY, base64 TEXT NOT NULL,
                     ref_count INTEGER DEFAULT 1, created_at REAL NOT NULL
@@ -68,7 +69,8 @@ class SqliteDatabase(DatabasePort):
                     total_rounds INTEGER DEFAULT 0,
                     trigger_count INTEGER DEFAULT 0,
                     scene_tag TEXT, namespace TEXT,
-                    experience_notes TEXT,
+                    l1_code INTEGER DEFAULT 0,
+                    experience_notes TEXT DEFAULT '[]',
                     created_at REAL NOT NULL, updated_at REAL NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS agent_edges_ml (
@@ -99,17 +101,14 @@ class SqliteDatabase(DatabasePort):
                 );
                 CREATE INDEX IF NOT EXISTS idx_agent_chat_mentions_chat
                     ON agent_chat_mentions(chat_id);
+                CREATE TABLE IF NOT EXISTS session_images (
+                    session_id TEXT NOT NULL,
+                    seq_index INTEGER NOT NULL,
+                    image_key TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    PRIMARY KEY (session_id, seq_index)
+                );
             """)
-            conn.commit()
-            # Migrate existing databases
-            try:
-                conn.execute("ALTER TABLE agent_messages ADD COLUMN reasoning_content TEXT")
-            except Exception:
-                pass
-            try:
-                conn.execute("ALTER TABLE agent_messages ADD COLUMN root_id TEXT")
-            except Exception:
-                pass
             conn.commit()
 
     def create_agent_session(self, title="新对话"):
@@ -236,9 +235,9 @@ class SqliteDatabase(DatabasePort):
                 INSERT INTO agent_memory_cards (id, flow_hash, intent_summary,
                     intent_vector_json, steps_json,
                     success_count, total_rounds,
-                    trigger_count, scene_tag, namespace, created_at, updated_at,
+                    trigger_count, scene_tag, namespace, l1_code, created_at, updated_at,
                     experience_notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     intent_summary=excluded.intent_summary,
                     intent_vector_json=excluded.intent_vector_json,
@@ -247,6 +246,7 @@ class SqliteDatabase(DatabasePort):
                     total_rounds=excluded.total_rounds,
                     trigger_count=excluded.trigger_count,
                     namespace=excluded.namespace,
+                    l1_code=excluded.l1_code,
                     experience_notes=excluded.experience_notes,
                     updated_at=excluded.updated_at
             """, (
@@ -255,7 +255,8 @@ class SqliteDatabase(DatabasePort):
                 json.dumps(card.get("steps") or [], ensure_ascii=False),
                 int(card.get("success_count") or 0), int(card.get("total_rounds") or 0),
                 int(card.get("trigger_count") or 0), card.get("scene_tag"),
-                card.get("namespace"), float(card.get("created_at") or 0), float(card.get("updated_at") or 0),
+                card.get("namespace"), int(card.get("l1_code") or 0),
+                float(card.get("created_at") or 0), float(card.get("updated_at") or 0),
                 json.dumps(card.get("experience_notes") or [], ensure_ascii=False),
             ))
             conn.commit()
@@ -324,3 +325,34 @@ class SqliteDatabase(DatabasePort):
         with self._conn() as conn:
             conn.execute("DELETE FROM agent_chat_mentions WHERE chat_id=?", (chat_id,))
             conn.commit()
+
+    def add_session_image(self, session_id: str, base64: str) -> str:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(seq_index), -1) FROM session_images WHERE session_id=?",
+                (session_id,),
+            ).fetchone()
+            seq = (row[0] if row else -1) + 1
+            img_id = f"img_{seq}"
+            conn.execute(
+                "INSERT INTO session_images (session_id, seq_index, image_key, created_at) VALUES (?, ?, ?, ?)",
+                (session_id, seq, img_id, time.time()),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO agent_images (id, base64, ref_count, created_at) VALUES (?, ?, 1, ?)",
+                (img_id, base64, time.time()),
+            )
+            conn.commit()
+        return img_id
+
+    def get_session_images(self, session_id: str) -> List[Dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT si.seq_index, si.image_key, ai.base64
+                   FROM session_images si
+                   JOIN agent_images ai ON ai.id = si.image_key
+                   WHERE si.session_id = ?
+                   ORDER BY si.seq_index""",
+                (session_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]

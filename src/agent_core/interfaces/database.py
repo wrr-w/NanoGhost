@@ -37,6 +37,18 @@ class DatabasePort(ABC):
     @abstractmethod
     def get_agent_images_batch(self, image_ids: List[str]) -> List[Dict[str, Any]]: ...
 
+    @abstractmethod
+    def add_session_image(self, session_id: str, base64: str) -> str:
+        """按 session 存储图片，返回顺序 ID（如 img_0）。
+        同一 session 的图片按序编号。
+        """
+        ...
+
+    @abstractmethod
+    def get_session_images(self, session_id: str) -> List[Dict[str, Any]]:
+        """获取 session 下所有图片，含顺序索引和 base64。"""
+        ...
+
     # --- 记忆卡片（支持 namespace 隔离） ---
     @abstractmethod
     def load_all_memory_cards(
