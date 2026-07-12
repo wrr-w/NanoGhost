@@ -9,8 +9,9 @@ from pathlib import Path
 
 import requests
 
-from agent_core.mcp.config import global_config_path, load_global_registry, mask_headers, resolve_servers
-from agent_core.mcp.http_sse import MCPHttpSSEClient
+from agent_core.mcp_client.config import global_config_path, load_global_registry, mask_headers, resolve_servers
+from agent_core.mcp_client.http_sse import MCPHttpSSEClient
+from agent_core.mcp_client.manifest_cache import load_manifest_cache
 from agent_core.utils import load_yaml_subset, pid_exists, terminate_pid
 
 
@@ -501,7 +502,7 @@ def _cmd_mcp_probe(args) -> int:
         if not s:
             results.append({"server_id": sid, "ok": False, "status": "disabled_or_not_allowed"})
             continue
-        from agent_core.mcp.stdio_client import MCPStdioClient
+        from agent_core.mcp_client.stdio_client import MCPStdioClient
         client = MCPStdioClient(s) if s.transport == "stdio" else MCPHttpSSEClient(s)
         r = client.probe()
         results.append({"server_id": sid, "ok": r.ok, "status": r.status, "error": r.error, "duration_ms": r.duration_ms})
@@ -515,7 +516,8 @@ def _cmd_mcp_tools(args) -> int:
     s = servers.get(args.server_id)
     if not s:
         raise SystemExit(f"server 不可用或不在白名单中: {args.server_id}")
-    client = MCPHttpSSEClient(s)
+    from agent_core.mcp_client.stdio_client import MCPStdioClient
+    client = MCPStdioClient(s) if s.transport == "stdio" else MCPHttpSSEClient(s)
     ok, result, err, dur = client.list_tools()
     tools = result.get("tools") if isinstance(result, dict) else None
     payload = {
@@ -534,7 +536,8 @@ def _cmd_mcp_reload(args) -> int:
     servers = resolve_servers(inst)
     results = []
     for s in servers:
-        client = MCPHttpSSEClient(s)
+        from agent_core.mcp_client.stdio_client import MCPStdioClient
+        client = MCPStdioClient(s) if s.transport == "stdio" else MCPHttpSSEClient(s)
         pr = client.probe()
         ok, tool_res, err, dur = client.list_tools() if pr.ok else (False, None, pr.error, pr.duration_ms)
         tools = tool_res.get("tools") if isinstance(tool_res, dict) else None
@@ -549,6 +552,27 @@ def _cmd_mcp_reload(args) -> int:
             }
         )
     print(json.dumps({"instance_dir": str(inst), "results": results}, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _cmd_mcp_manifest(args) -> int:
+    inst = _instance_dir_from_args(args)
+    servers = resolve_servers(inst)
+    rows = []
+    for s in servers:
+        manifest = load_manifest_cache(inst, s.server_id) or {}
+        actions = manifest.get("actions") if isinstance(manifest, dict) else None
+        rows.append(
+            {
+                "server_id": s.server_id,
+                "transport": s.transport,
+                "url": s.url,
+                "has_manifest": bool(manifest),
+                "actions_count": len(actions) if isinstance(actions, list) else 0,
+                "last_manifest_refresh_at": manifest.get("last_manifest_refresh_at") if isinstance(manifest, dict) else None,
+            }
+        )
+    print(json.dumps({"instance_dir": str(inst), "results": rows}, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -652,6 +676,10 @@ def main(argv: list[str] | None = None) -> int:
     p_reload = mcp_sub.add_parser("reload", help="reconnect all MCP servers and refresh tool list")
     p_reload.add_argument("--instance-dir", "-I", default=None, help="instance directory (path or name)")
     p_reload.set_defaults(func=_cmd_mcp_reload)
+
+    p_manifest = mcp_sub.add_parser("manifest", help="show local MCP manifest cache")
+    p_manifest.add_argument("--instance-dir", "-I", default=None, help="instance directory (path or name)")
+    p_manifest.set_defaults(func=_cmd_mcp_manifest)
 
     args = parser.parse_args(argv)
     if args.gateway:

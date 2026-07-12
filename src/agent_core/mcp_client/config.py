@@ -31,10 +31,16 @@ class MCPServerConfig:
     headers: Dict[str, str]
     timeout_seconds: int
     extra_args: List[str] = None  # type: ignore
+    title: str = ""
+    description: str = ""
+    use_cases: List[str] = None  # type: ignore
+    notes: str = ""
 
     def __post_init__(self):
         if self.extra_args is None:
             object.__setattr__(self, 'extra_args', [])
+        if self.use_cases is None:
+            object.__setattr__(self, 'use_cases', [])
 
 
 def load_global_registry() -> Dict[str, Any]:
@@ -103,6 +109,11 @@ def resolve_servers(instance_dir: Path) -> List[MCPServerConfig]:
             if hv is None:
                 continue
             headers[str(hk)] = substitute_env(str(hv))
+        title = str(s.get("title") or sid).strip()
+        description = str(s.get("description") or "").strip()
+        use_cases_raw = _as_list(s.get("use_cases"))
+        use_cases = [str(x).strip() for x in use_cases_raw if str(x).strip()]
+        notes = str(s.get("notes") or "").strip()
         out.append(
             MCPServerConfig(
                 server_id=sid,
@@ -111,6 +122,10 @@ def resolve_servers(instance_dir: Path) -> List[MCPServerConfig]:
                 headers=headers,
                 timeout_seconds=timeout_seconds,
                 extra_args=extra_args,
+                title=title,
+                description=description,
+                use_cases=use_cases,
+                notes=notes,
             )
         )
     return out

@@ -43,6 +43,30 @@ agent_b = Agent(db=db, llm=llm, http=http, namespace="app_b")
 # 两个 Agent 的记忆完全隔离
 ```
 
+## Memory and MCP Context
+
+- `memory.md` 存放长期描述性记忆
+- `memory.daily/YYYY-MM-DD.md` 存放当天工作记忆
+- 已启用的 MCP 服务可能会先以上下文认知信息出现，再在运行时变为可调用
+- 只有实际出现在运行时 tool schema 中的工具才可执行
+
+## MCP Runtime States
+
+- `known`: 已配置并被识别，但还没有完成一次实时刷新
+- `loading`: 正在刷新 MCP 服务
+- `ready`: 最新工具定义已拉取成功，并已注册为可执行工具
+- `stale`: 本地仍有旧 manifest，但最新实时刷新未成功或已过期
+- `error`: MCP 服务存在，但当前不可执行
+
+## MCP Manifest
+
+- `nanoghost mcp manifest -I <instance>` 用来查看实例当前本地缓存的 MCP manifest
+- manifest 反映的是“模型认知层”：
+  - 服务是否已知
+  - 上次缓存到了多少个 action
+  - 上次 manifest 刷新时间
+- manifest 不等于当前一定可执行；真正执行仍以运行时 `ready` 状态和 tool schema 为准
+
 ## Skill 扩展
 
 Agent-core 支持 SKILL.md 生态（兼容 opencode/claude-code/hermes）：

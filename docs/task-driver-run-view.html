@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Task / Driver / Run Spec 视图</title>
+    <style>
+      :root {
+        --bg: #0b0e14;
+        --panel: #111827;
+        --text: #e5e7eb;
+        --muted: #9ca3af;
+        --line: #334155;
+        --accent: #60a5fa;
+        --good: #34d399;
+        --warn: #fbbf24;
+        --bad: #fb7185;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji",
+          "Segoe UI Emoji";
+        line-height: 1.45;
+      }
+      a {
+        color: var(--accent);
+      }
+      .wrap {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 32px 20px 80px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 22px;
+        font-weight: 700;
+      }
+      .sub {
+        color: var(--muted);
+        margin: 0 0 26px;
+        font-size: 13px;
+      }
+      h2 {
+        margin: 34px 0 10px;
+        font-size: 16px;
+        font-weight: 700;
+      }
+      p,
+      li {
+        font-size: 13px;
+        color: var(--text);
+      }
+      .muted {
+        color: var(--muted);
+      }
+      .card {
+        background: linear-gradient(180deg, rgba(17, 24, 39, 0.92), rgba(17, 24, 39, 0.72));
+        border: 1px solid rgba(51, 65, 85, 0.6);
+        border-radius: 12px;
+        padding: 16px;
+        margin: 12px 0 18px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 14px;
+      }
+      @media (min-width: 980px) {
+        .grid.two {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+      .badge {
+        display: inline-block;
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        border: 1px solid rgba(51, 65, 85, 0.9);
+        color: var(--muted);
+      }
+      .pill {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 8px;
+        font-size: 11px;
+        border: 1px solid rgba(51, 65, 85, 0.9);
+        margin-right: 6px;
+        margin-top: 6px;
+        color: var(--text);
+        background: rgba(15, 23, 42, 0.55);
+      }
+      .pill.good {
+        border-color: rgba(52, 211, 153, 0.5);
+        color: var(--good);
+      }
+      .pill.warn {
+        border-color: rgba(251, 191, 36, 0.5);
+        color: var(--warn);
+      }
+      .pill.bad {
+        border-color: rgba(251, 113, 133, 0.5);
+        color: var(--bad);
+      }
+      .small {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      svg {
+        width: 100%;
+        height: auto;
+        display: block;
+      }
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 10px;
+      }
+      .k {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        font-size: 12px;
+        color: var(--text);
+      }
+      .hr {
+        height: 1px;
+        background: rgba(51, 65, 85, 0.6);
+        margin: 18px 0;
+      }
+      .callout {
+        border-left: 3px solid rgba(96, 165, 250, 0.7);
+        padding-left: 10px;
+        color: var(--muted);
+      }
+      .steps {
+        margin: 0;
+        padding-left: 18px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Task / Driver / Run 协议视图</h1>
+      <p class="sub">
+        这是对 <span class="k">docs/task-driver-run-spec.md</span> 的“可视化阅读版”，用于快速对齐：哪些是长期对象、哪些是一次执行、push/pull
+        分别推/拉的是什么，以及 NanoGhost 如何只做 Gateway/Executor/Surface。
+      </p>
+
+      <div class="card">
+        <div class="badge">View 1</div>
+        <h2>全局协作链路（控制面 / 执行面）</h2>
+        <p class="muted">
+          Task System 负责控制面：DriverPump tick / Driver evaluation / Task state transition / Run creation / Feedback routing。
+          NanoGhost 负责执行面的一部分：执行 Run（作为 Executor）以及把反馈呈现给人（作为 Surface）。
+        </p>
+        <svg viewBox="0 0 1200 520" role="img" aria-label="Overall flow diagram">
+          <defs>
+            <linearGradient id="gPanel" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0" stop-color="#111827" stop-opacity="0.95" />
+              <stop offset="1" stop-color="#0f172a" stop-opacity="0.75" />
+            </linearGradient>
+            <marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#60a5fa" />
+            </marker>
+            <marker id="arrowMuted" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b" />
+            </marker>
+          </defs>
+
+          <rect x="20" y="20" width="1160" height="480" rx="14" fill="url(#gPanel)" stroke="#334155" stroke-opacity="0.8" />
+
+          <text x="52" y="62" fill="#9ca3af" font-size="12">Inputs</text>
+          <rect x="44" y="78" width="250" height="120" rx="12" fill="#0b1220" stroke="#334155" />
+          <text x="68" y="112" fill="#e5e7eb" font-size="14" font-weight="700">User / External Event</text>
+          <text x="68" y="136" fill="#9ca3af" font-size="12">chat, webhook, scheduler tick</text>
+          <text x="68" y="160" fill="#9ca3af" font-size="12">这不是“agent 轮询”</text>
+
+          <text x="52" y="244" fill="#9ca3af" font-size="12">Task System (Control plane)</text>
+          <rect x="44" y="260" width="540" height="200" rx="12" fill="#0b1220" stroke="#334155" />
+          <text x="68" y="294" fill="#e5e7eb" font-size="14" font-weight="700">Task System</text>
+          <text x="68" y="318" fill="#9ca3af" font-size="12">DriverPump tick -> Driver evaluation -> state transition</text>
+          <text x="68" y="342" fill="#9ca3af" font-size="12">create Run -> dispatch run -> writeback</text>
+          <text x="68" y="366" fill="#9ca3af" font-size="12">route Feedback -> Delivery</text>
+
+          <rect x="350" y="292" width="210" height="54" rx="10" fill="#111827" stroke="#334155" />
+          <text x="368" y="324" fill="#e5e7eb" font-size="12" font-weight="700">DriverPump + Driver</text>
+          <text x="368" y="342" fill="#9ca3af" font-size="11">tick / evaluate / decide</text>
+
+          <rect x="350" y="356" width="210" height="54" rx="10" fill="#111827" stroke="#334155" />
+          <text x="368" y="388" fill="#e5e7eb" font-size="12" font-weight="700">Run Store / Queue</text>
+          <text x="368" y="406" fill="#9ca3af" font-size="11">create / claim / lease</text>
+
+          <text x="632" y="244" fill="#9ca3af" font-size="12">Delivery (Transport & Inbox)</text>
+          <rect x="624" y="260" width="556" height="200" rx="12" fill="#0b1220" stroke="#334155" />
+          <text x="648" y="294" fill="#e5e7eb" font-size="14" font-weight="700">Delivery Layer</text>
+          <text x="648" y="318" fill="#9ca3af" font-size="12">push / pull / subscription 只是传输方式</text>
+          <text x="648" y="342" fill="#9ca3af" font-size="12">inbox：可审计、可重试、可去重</text>
+
+          <rect x="648" y="356" width="250" height="84" rx="10" fill="#111827" stroke="#334155" />
+          <text x="668" y="388" fill="#e5e7eb" font-size="12" font-weight="700">FeedbackInbox</text>
+          <text x="668" y="406" fill="#9ca3af" font-size="11">pending / delivered / acked</text>
+          <text x="668" y="424" fill="#9ca3af" font-size="11">recipient_ref -> messages[]</text>
+
+          <rect x="914" y="356" width="242" height="84" rx="10" fill="#111827" stroke="#334155" />
+          <text x="934" y="388" fill="#e5e7eb" font-size="12" font-weight="700">Dispatch</text>
+          <text x="934" y="406" fill="#9ca3af" font-size="11">webhook / MQ / claim loop</text>
+          <text x="934" y="424" fill="#9ca3af" font-size="11">幂等 + 重试 + 降级</text>
+
+          <text x="52" y="458" fill="#9ca3af" font-size="12">NanoGhost (Execution & Surface)</text>
+          <rect x="44" y="474" width="1136" height="0" rx="0" fill="transparent" />
+
+          <rect x="44" y="78" width="250" height="120" rx="12" fill="transparent" stroke="transparent" />
+
+          <rect x="624" y="78" width="556" height="120" rx="12" fill="#0b1220" stroke="#334155" />
+          <text x="648" y="112" fill="#e5e7eb" font-size="14" font-weight="700">NanoGhost</text>
+          <text x="648" y="136" fill="#9ca3af" font-size="12">Gateway / Executor / Surface</text>
+          <text x="648" y="160" fill="#9ca3af" font-size="12">把反馈“喂给”下一轮 Agent turn</text>
+          <text x="648" y="184" fill="#9ca3af" font-size="12">而不是让 LLM 轮询</text>
+
+          <path d="M 294 138 C 350 138, 360 138, 410 138" stroke="#60a5fa" stroke-width="2" fill="none" marker-end="url(#arrow)" />
+          <text x="320" y="124" fill="#9ca3af" font-size="11">CreateTask / Commands</text>
+
+          <path d="M 294 160 C 360 210, 360 250, 320 300" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#arrowMuted)" />
+          <text x="300" y="212" fill="#9ca3af" font-size="11">或来自 scheduler / event source</text>
+
+          <path d="M 410 138 C 500 138, 560 138, 624 138" stroke="#60a5fa" stroke-width="2" fill="none" marker-end="url(#arrow)" />
+          <text x="448" y="124" fill="#9ca3af" font-size="11">DispatchRun / DeliverFeedback</text>
+
+          <path d="M 520 356 C 600 356, 612 356, 648 356" stroke="#60a5fa" stroke-width="2" fill="none" marker-end="url(#arrow)" />
+          <text x="536" y="342" fill="#9ca3af" font-size="11">route feedback</text>
+
+          <path d="M 898 398 C 930 260, 920 170, 864 150" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#arrowMuted)" />
+          <text x="910" y="230" fill="#9ca3af" font-size="11">push or subscription</text>
+
+          <path d="M 624 170 C 520 230, 480 280, 455 292" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#arrowMuted)" />
+          <text x="520" y="244" fill="#9ca3af" font-size="11">ReportRunResult</text>
+        </svg>
+        <div class="legend">
+          <span class="pill good">控制面：Task System</span>
+          <span class="pill warn">投递层：Delivery / Inbox</span>
+          <span class="pill">执行/交互：NanoGhost</span>
+        </div>
+      </div>
+
+      <div class="grid two">
+        <div class="card">
+          <div class="badge">View 2</div>
+          <h2>Run 分派 vs Feedback 投递</h2>
+          <p class="muted">你在 spec 里强调的关键拆分：定时只影响 DriverPump tick；push/pull 是传输；Run 和 Feedback 是两条流。</p>
+          <svg viewBox="0 0 520 300" role="img" aria-label="Run vs Feedback diagram">
+            <defs>
+              <marker id="a2" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#60a5fa" />
+              </marker>
+            </defs>
+            <rect x="18" y="18" width="484" height="264" rx="14" fill="#0b1220" stroke="#334155" />
+            <text x="34" y="48" fill="#e5e7eb" font-size="13" font-weight="700">同一个 tick 里发生两件事</text>
+
+            <rect x="34" y="68" width="452" height="86" rx="12" fill="#111827" stroke="#334155" />
+            <text x="52" y="98" fill="#e5e7eb" font-size="12" font-weight="700">Flow A: Run Dispatch</text>
+            <text x="52" y="120" fill="#9ca3af" font-size="11">Driver decides -> create Run -> dispatch/claim -> executor runs -> ReportRunResult</text>
+
+            <rect x="34" y="170" width="452" height="96" rx="12" fill="#111827" stroke="#334155" />
+            <text x="52" y="200" fill="#e5e7eb" font-size="12" font-weight="700">Flow B: Feedback Delivery</text>
+            <text x="52" y="222" fill="#9ca3af" font-size="11">state changed / run finished -> FeedbackMessage -> inbox -> insert/inbox/digest</text>
+            <text x="52" y="244" fill="#9ca3af" font-size="11">push/pull/subscription 是“怎么送”，不是“送什么”</text>
+
+            <path d="M 102 144 L 102 170" stroke="#60a5fa" stroke-width="2" marker-end="url(#a2)" />
+            <text x="120" y="160" fill="#9ca3af" font-size="11">同一次 writeback 可产出反馈</text>
+          </svg>
+          <div class="callout small">
+            定时任务的“定时”只决定什么时候 tick；tick 命中后才会产生 Run 和/或 Feedback。
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="badge">View 3</div>
+          <h2>Delivery 层：push / pull / subscription 怎么落地</h2>
+          <p class="muted">轮询如果存在，应发生在 gateway/worker，而不是发生在 LLM 的推理循环。</p>
+          <svg viewBox="0 0 520 300" role="img" aria-label="Delivery layer diagram">
+            <defs>
+              <marker id="a3" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#60a5fa" />
+              </marker>
+            </defs>
+            <rect x="18" y="18" width="484" height="264" rx="14" fill="#0b1220" stroke="#334155" />
+
+            <rect x="34" y="44" width="210" height="72" rx="12" fill="#111827" stroke="#334155" />
+            <text x="52" y="76" fill="#e5e7eb" font-size="12" font-weight="700">Task System</text>
+            <text x="52" y="96" fill="#9ca3af" font-size="11">creates Run + Feedback</text>
+
+            <rect x="276" y="44" width="210" height="72" rx="12" fill="#111827" stroke="#334155" />
+            <text x="294" y="76" fill="#e5e7eb" font-size="12" font-weight="700">Delivery</text>
+            <text x="294" y="96" fill="#9ca3af" font-size="11">retry / idempotency</text>
+
+            <rect x="34" y="150" width="210" height="112" rx="12" fill="#111827" stroke="#334155" />
+            <text x="52" y="182" fill="#e5e7eb" font-size="12" font-weight="700">FeedbackInbox</text>
+            <text x="52" y="204" fill="#9ca3af" font-size="11">pending/delivered/acked</text>
+            <text x="52" y="226" fill="#9ca3af" font-size="11">cursor-based pull</text>
+
+            <rect x="276" y="150" width="210" height="112" rx="12" fill="#111827" stroke="#334155" />
+            <text x="294" y="182" fill="#e5e7eb" font-size="12" font-weight="700">NanoGhost Gateway</text>
+            <text x="294" y="204" fill="#9ca3af" font-size="11">insert / inbox / digest</text>
+            <text x="294" y="226" fill="#9ca3af" font-size="11">pull feedback at turn start</text>
+
+            <path d="M 244 80 L 276 80" stroke="#60a5fa" stroke-width="2" marker-end="url(#a3)" />
+            <text x="168" y="66" fill="#9ca3af" font-size="11">push / queue / stream</text>
+
+            <path d="M 140 116 L 140 150" stroke="#60a5fa" stroke-width="2" marker-end="url(#a3)" />
+            <text x="54" y="138" fill="#9ca3af" font-size="11">write inbox</text>
+
+            <path d="M 276 206 L 244 206" stroke="#60a5fa" stroke-width="2" marker-end="url(#a3)" />
+            <text x="156" y="194" fill="#9ca3af" font-size="11">pull (gateway polls)</text>
+          </svg>
+          <div class="legend">
+            <span class="pill warn">轮询发生在 Gateway/Worker</span>
+            <span class="pill bad">禁止：LLM 自己轮询</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="badge">Example 1</div>
+        <h2>例子：定时任务（每天 9:00 汇总 -> 发回 NanoGhost）</h2>
+        <p class="muted">
+          这个例子回答：定时 pull 到底 pull 什么？——定时的是 DriverPump tick；pull 的是 inbox 或 claim run（发生在 gateway/worker 层）。
+        </p>
+        <ol class="steps">
+          <li>用户在 NanoGhost 里发起：创建一个每天 9:00 的汇总任务（CreateTask）。</li>
+          <li>Task System 存储 Task，绑定 driver（例如 “news.digest.v1”）和调度策略（cron）。</li>
+          <li>每天 9:00，DriverPump tick 触发 driver evaluation：决定要执行一次汇总 Run。</li>
+          <li>Task System 创建 Run（RunQueue/RunStore），选择 executor_ref（例如 agent.nanoghost.research）。</li>
+          <li>Run 分派可选：push DispatchRun 到 NanoGhost；或由 NanoGhost worker claim run。</li>
+          <li>NanoGhost 执行一次 Agent run，回传 ReportRunResult。</li>
+          <li>Task System writeback：更新 Task 状态/游标/产出 artifacts。</li>
+          <li>Task System 生成 FeedbackMessage（例如 important_not_urgent），写入 FeedbackInbox 并按策略投递。</li>
+          <li>NanoGhost gateway 将反馈插入会话（after_current_turn）或写入 inbox；下一轮 agent 读到。</li>
+        </ol>
+      </div>
+
+      <div class="card">
+        <div class="badge">Example 2</div>
+        <h2>例子：事件驱动（CI 失败 -> 立刻打断会话）</h2>
+        <p class="muted">
+          事件可以来自外部 webhook；Task System 只在“状态变化”时产出反馈，并使用 immediate_insert 投递策略。
+        </p>
+        <ol class="steps">
+          <li>外部系统（CI/GitHub）把失败事件推到 Task System 的入口。</li>
+          <li>driver evaluation 命中：Task 从 running -> failed（state transition）。</li>
+          <li>Task System 生成 FeedbackMessage：priority=important_urgent，delivery_policy=immediate_insert。</li>
+          <li>Delivery 使用 push（webhook/queue/stream）把反馈送到 NanoGhost gateway（幂等 + 重试）。</li>
+          <li>NanoGhost 立即在当前会话插入一条系统消息，agent 得到中断式通知并进行响应。</li>
+        </ol>
+      </div>
+
+      <div class="card">
+        <div class="badge">Checklist</div>
+        <h2>你可以用这 6 个问题检查设计是否清晰</h2>
+        <ul class="steps">
+          <li>这个信息是 Run 分派，还是 Feedback 投递？</li>
+          <li>它应该 push 还是 pull？轮询发生在谁？（必须不是 LLM）</li>
+          <li>触发点是 state transition / run lifecycle 吗？还是噪音指标？</li>
+          <li>delivery_policy 是 immediate_insert / after_current_turn / throttle / digest 哪个？</li>
+          <li>是否需要 inbox 以实现可审计、可重试、可去重？</li>
+          <li>是否需要把“投递到 NanoGhost”与“进入上下文”严格分离？</li>
+        </ul>
+      </div>
+
+      <div class="hr"></div>
+      <p class="small">
+        如果你想要更贴近代码/接口的版本，我也可以把这些图升级为：把每条箭头旁边标上你 spec 里的接口名（CreateTask / DispatchRun /
+        ReportRunResult / DeliverFeedback / PullFeedback / ClaimRuns）以及消息字段最小集合。
+      </p>
+    </div>
+  </body>
+</html>

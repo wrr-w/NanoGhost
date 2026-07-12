@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
+from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent_core.engine.agent import Agent
@@ -20,6 +22,7 @@ from agent_core.channel.instance import BotInstance
 from agent_core.channel.session import SessionStore
 from agent_core.channel.interfaces import ChannelIO
 from agent_core.channel.message_context import ContextBuilder, MessageSource, MessageContext
+from agent_core.memory.files import read_daily_memory_block
 
 logger = logging.getLogger("agent_core")
 
@@ -100,6 +103,17 @@ async def run_agent_turn(
     if is_new or session_context not in full_sys_prompt:
         full_sys_prompt += "\n\n" + session_context
 
+    today_str = date.today().isoformat()
+    daily_memory = read_daily_memory_block(os.environ.get("INSTANCE_DIR", ""), today_str)
+    extra_system_blocks: List[Dict[str, Any]] = []
+    if daily_memory:
+        extra_system_blocks.append(
+            {
+                "role": "system",
+                "content": [{"type": "text", "text": f"## 今日短期记忆\n\n{daily_memory}"}],
+            }
+        )
+
     root_key = ""
     if source.thread_id:
         root_key = source.thread_id
@@ -110,6 +124,7 @@ async def run_agent_turn(
         base_url=base_url,
         sys_prompt=full_sys_prompt,
         api_spec=api_spec or {},
+        extra_system_messages=extra_system_blocks,
         history_max_messages=getattr(identity, "history_max_messages", 120),
         history_max_tokens=getattr(identity, "history_max_tokens", 200_000),
         root_id=root_key or None,

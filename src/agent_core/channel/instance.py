@@ -11,6 +11,8 @@ import logging
 import os
 from typing import Optional
 
+from agent_core.memory.files import read_long_term_memory_block
+
 logger = logging.getLogger("agent_core")
 
 
@@ -35,26 +37,19 @@ class BotInstance:
         return self._base_sys_prompt
 
     def refresh_memory(self, instance_dir: str = ""):
-        """读取 memory.md 并注入 sys_prompt。"""
+        """读取长期记忆并注入 sys_prompt。"""
         if not instance_dir:
             instance_dir = os.environ.get("INSTANCE_DIR", "")
         if not instance_dir:
             return
-        memory_path = os.path.join(instance_dir, "memory.md")
-        if not os.path.isfile(memory_path):
+        memory_content = read_long_term_memory_block(instance_dir)
+        if not memory_content:
             return
-        try:
-            with open(memory_path, encoding="utf-8") as f:
-                memory_content = f.read().strip()
-            if not memory_content:
-                return
-            marker = "## 记住的信息"
-            if marker in self._base_sys_prompt:
-                idx = self._base_sys_prompt.find(marker)
-                self._base_sys_prompt = self._base_sys_prompt[:idx].rstrip()
-            self._base_sys_prompt += "\n\n## 记住的信息\n\n" + memory_content + "\n\n"
-        except Exception:
-            pass
+        marker = "## 记住的信息"
+        if marker in self._base_sys_prompt:
+            idx = self._base_sys_prompt.find(marker)
+            self._base_sys_prompt = self._base_sys_prompt[:idx].rstrip()
+        self._base_sys_prompt += "\n\n## 记住的信息\n\n" + memory_content + "\n\n"
 
     def load_feedback_level(self, instance_dir: str = ""):
         """从实例 config.yaml 加载反馈级别。"""

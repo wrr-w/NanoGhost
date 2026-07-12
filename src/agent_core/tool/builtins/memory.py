@@ -1,9 +1,15 @@
 import logging
 import os
+from datetime import date
 from typing import Any
 
 from agent_core.memory.cards import get_card_detail, list_card_index
 from agent_core.memory.classifier import classify, level_name
+from agent_core.memory.files import (
+    daily_memory_path,
+    ensure_memory_layout,
+    long_term_memory_path,
+)
 
 from ..models import ToolResult
 
@@ -30,9 +36,24 @@ MEMORY_WRITE_DEF = {
             "type": "string",
             "description": "Lookup key (used for update/delete)",
         },
+        "target": {
+            "type": "string",
+            "enum": ["long_term", "daily"],
+            "description": "Write to memory.md or today's daily memory file",
+            "default": "long_term",
+        },
     },
     "required": ["action", "section"],
 }
+
+
+def _resolve_memory_target_path(instance_dir: str, target: str) -> str:
+    ensure_memory_layout(instance_dir)
+    if target == "daily":
+        return str(daily_memory_path(instance_dir, date.today().isoformat()))
+    if target == "long_term":
+        return str(long_term_memory_path(instance_dir))
+    raise ValueError(f"Unknown target: {target}")
 
 
 def memory_write(args: dict, ctx: dict) -> ToolResult:
@@ -41,22 +62,25 @@ def memory_write(args: dict, ctx: dict) -> ToolResult:
     section = args.get("section", "")
     content = args.get("content", "")
     key = args.get("key", "")
+    target = args.get("target", "long_term")
     inst_dir = os.getenv("INSTANCE_DIR", "")
     if not inst_dir:
         return ToolResult(ok=False, error="INSTANCE_DIR not set")
-    path = os.path.join(inst_dir, "memory.md")
+    try:
+        path = _resolve_memory_target_path(inst_dir, target)
+    except ValueError as e:
+        return ToolResult(ok=False, error=str(e))
     if not os.path.isfile(path):
         try:
-            os.makedirs(inst_dir, exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
                 f.write("# NanoGhost Memory\n\n")
         except Exception as e:
-            return ToolResult(ok=False, error=f"Cannot create memory.md: {e}")
+            return ToolResult(ok=False, error=f"Cannot create memory file: {e}")
     try:
         with open(path, "r", encoding="utf-8") as f:
             text = f.read()
     except Exception as e:
-        return ToolResult(ok=False, error=f"Cannot read memory.md: {e}")
+        return ToolResult(ok=False, error=f"Cannot read memory file: {e}")
     if action == "append":
         header = f"## {section}"
         entry = content if content.startswith("- ") else f"- {content}"
@@ -88,8 +112,8 @@ def memory_write(args: dict, ctx: dict) -> ToolResult:
         with open(path, "w", encoding="utf-8") as f:
             f.write(text)
     except Exception as e:
-        return ToolResult(ok=False, error=f"Cannot write memory.md: {e}")
-    return ToolResult(ok=True, data=f"memory.md {action} ok")
+        return ToolResult(ok=False, error=f"Cannot write memory file: {e}")
+    return ToolResult(ok=True, data=f"{os.path.basename(path)} {action} ok")
 
 
 MEMORY_EXPLORE_DEF = {
@@ -185,6 +209,12 @@ MEMORY_READ_DEF = {
             "type": "string",
             "description": "Keyword to filter (for action=detail)",
         },
+        "target": {
+            "type": "string",
+            "enum": ["long_term", "daily"],
+            "description": "Read from memory.md or today's daily memory file",
+            "default": "long_term",
+        },
     },
     "required": ["action"],
 }
@@ -193,17 +223,21 @@ MEMORY_READ_DEF = {
 def memory_read(args: dict, ctx: dict) -> ToolResult:
     """Read memory.md with layered disclosure."""
     action = args.get("action", "")
+    target = args.get("target", "long_term")
     inst_dir = os.getenv("INSTANCE_DIR", "")
     if not inst_dir:
         return ToolResult(ok=False, error="INSTANCE_DIR not set")
-    path_md = os.path.join(inst_dir, "memory.md")
+    try:
+        path_md = _resolve_memory_target_path(inst_dir, target)
+    except ValueError as e:
+        return ToolResult(ok=False, error=str(e))
     if not os.path.isfile(path_md):
-        return ToolResult(ok=True, data={"message": "empty (no memory.md yet)"})
+        return ToolResult(ok=True, data={"message": f"empty (no {os.path.basename(path_md)} yet)"})
     try:
         with open(path_md, "r", encoding="utf-8") as f:
             text = f.read()
     except Exception as e:
-        return ToolResult(ok=False, error=f"Cannot read memory.md: {e}")
+        return ToolResult(ok=False, error=f"Cannot read memory file: {e}")
     if action == "index":
         sections = []
         current = None

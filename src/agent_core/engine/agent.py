@@ -310,6 +310,8 @@ class AgentExecutor:
             root_id=getattr(config, "root_id", None),
             supports_vision=self.agent.llm.supports_vision,
         )
+        if getattr(config, "extra_system_messages", None):
+            messages.extend(config.extra_system_messages)
         logger.info(f"[Agent] build_agent_messages_with_history 耗时={time.time()-_t_messages:.1f}s")
 
         # ---- 注入 SKILL.md 技能索引 ----
@@ -321,6 +323,18 @@ class AgentExecutor:
             messages.append({
                 "role": "system",
                 "content": [{"type": "text", "text": skill_block}],
+            })
+
+        mcp_block = None
+        if getattr(self.agent, "_mcp_manager", None) is not None:
+            try:
+                mcp_block = self.agent._mcp_manager.build_awareness_summary()
+            except Exception:
+                mcp_block = None
+        if mcp_block:
+            messages.append({
+                "role": "system",
+                "content": [{"type": "text", "text": mcp_block}],
             })
 
         logger.debug(f"[Agent] final messages count={len(messages)}")

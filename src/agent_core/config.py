@@ -39,6 +39,8 @@ class AgentConfig:
     base_url: str
     sys_prompt: str
     api_spec: Dict[str, Any] = field(default_factory=dict)
+    extra_system_messages: List[Dict[str, Any]] = field(default_factory=list)
+    """每轮额外注入的 system messages，例如 daily memory。"""
     skill_extra_dirs: Optional[List[str]] = None
     """额外搜索 SKILL.md 的目录。"""
     shell_timeout: int = 120

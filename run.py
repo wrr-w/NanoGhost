@@ -31,6 +31,7 @@ if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
 from dotenv import load_dotenv
+from agent_core.memory.files import read_long_term_memory_block
 
 def _clean_env_value(v: str) -> str:
     if v is None:
@@ -56,12 +57,6 @@ def _preparse_instance_dir(argv: List[str]) -> str:
 def _bootstrap_instance(argv: List[str]) -> None:
     instance_dir = _clean_env_value(_preparse_instance_dir(argv))
     if not instance_dir:
-        if getattr(sys, "frozen", False):
-            exe_dir = os.path.dirname(sys.executable)
-            env_path = os.path.join(exe_dir, ".env")
-            if os.path.isfile(env_path):
-                load_dotenv(dotenv_path=env_path)
-                return
         load_dotenv()
         return
 
@@ -75,7 +70,6 @@ def _bootstrap_instance(argv: List[str]) -> None:
     os.environ.setdefault("AGENT_DB_PATH", os.path.join(instance_dir, "data", "agent_data.db"))
     os.environ.setdefault("AGENT_PROMPTS_DIR", os.path.join(instance_dir, "prompts"))
     os.environ.setdefault("AGENT_WORKDIR", os.path.join(instance_dir, "work"))
-    # skills 目录由 config.yaml 的 skills.dirs/extra_dirs 控制，不再设置 AGENTS_SKILLS_DIR
     os.environ.setdefault("AGENT_NAMESPACE", os.path.basename(instance_dir.rstrip("\\/")) or "agent")
 
     dotenv_path = os.path.join(instance_dir, ".env")
@@ -402,21 +396,15 @@ def assemble_sys_prompt() -> str:
     if rules:
         parts.append(rules)
 
-    # 注入 memory.md
+    # 注入长期记忆；daily memory 改为按轮注入
     inst_dir = _clean_env_value(os.getenv("INSTANCE_DIR"))
     if inst_dir:
-        memory_path = os.path.join(inst_dir, "memory.md")
-        if os.path.isfile(memory_path):
-            try:
-                with open(memory_path, encoding="utf-8") as f:
-                    memory_content = f.read().strip()
-                if memory_content:
-                    parts.append(
-                        f"## 记住的信息\n\n{memory_content}\n\n"
-                        f"如需更新，使用 memory_write 工具。"
-                    )
-            except Exception:
-                pass
+        memory_content = read_long_term_memory_block(inst_dir)
+        if memory_content:
+            parts.append(
+                f"## 记住的信息\n\n{memory_content}\n\n"
+                f"如需更新，使用 memory_write 工具。"
+            )
 
     sys_prompt = "\n\n".join(parts)
     # 替换占位符（若无 API spec 则会保留原文）

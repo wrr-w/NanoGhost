@@ -3,6 +3,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -10,8 +11,8 @@ from agent_core.tool import ToolRegistry, ToolResult
 
 from .config import MCPServerConfig, load_global_registry, mask_headers, resolve_servers
 from .http_sse import MCPHttpSSEClient
+from .manifest_cache import load_manifest_cache, save_manifest_cache
 from .stdio_client import MCPStdioClient
-from pathlib import Path
 
 
 _MCP_TOOL_PREFIX = "mcp_"
@@ -19,10 +20,9 @@ _MCP_TOOL_PREFIX = "mcp_"
 
 @dataclass
 class ServerCache:
-    status: str = "disconnected"
+    status: str = "known"
     last_probe_at: float = 0.0
     last_error: str = ""
-    cooldown_until: float = 0.0
     fail_count: int = 0
     tools: Dict[str, Dict[str, Any]] = None  # type: ignore
     tools_hash: str = ""
@@ -60,6 +60,37 @@ def _extract_tools(result_obj: Any) -> Dict[str, Dict[str, Any]]:
             continue
         out[name] = t
     return out
+
+
+def _manifest_payload_from_tools(cfg: MCPServerConfig, tools: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    refreshed_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return {
+        "server_id": cfg.server_id,
+        "title": cfg.title or cfg.server_id,
+        "description": cfg.description or "",
+        "transport": cfg.transport,
+        "endpoint": cfg.url,
+        "actions": [
+            {
+                "name": name,
+                "description": str(tool.get("description") or ""),
+                "inputSchema": tool.get("inputSchema") or {},
+            }
+            for name, tool in sorted(tools.items())
+        ],
+        "last_manifest_refresh_at": refreshed_at,
+    }
+
+
+def _normalize_status(raw_status: str, tools: Optional[Dict[str, Dict[str, Any]]] = None) -> str:
+    status = (raw_status or "").strip().lower()
+    if status in {"known", "loading", "ready", "stale", "error"}:
+        return status
+    if status == "connected":
+        return "ready" if tools else "loading"
+    if status in {"disconnected", ""}:
+        return "known"
+    return status
 
 
 def _build_server_tool_schema(server_id: str, tools: Dict[str, Dict[str, Any]]) -> Tuple[str, str, Dict[str, Any]]:
@@ -110,7 +141,7 @@ def _build_server_tool_schema(server_id: str, tools: Dict[str, Dict[str, Any]]) 
 
 
 class MCPManager:
-    def __init__(self, cooldown_seconds: int = 60, fail_threshold: int = 3,
+    def __init__(self, fail_threshold: int = 3,
                  probe_ttl_seconds: int = 60):
         self._lock = threading.Lock()
         self._registry: Optional[ToolRegistry] = None
@@ -120,7 +151,6 @@ class MCPManager:
         self._last_loaded_instance: str = ""
         self._probe_ttl_seconds = probe_ttl_seconds
         self._fail_threshold = fail_threshold
-        self._cooldown_seconds = cooldown_seconds
         self._poller_thread: Optional[threading.Thread] = None
         self._poller_stop = threading.Event()
 
@@ -242,12 +272,12 @@ class MCPManager:
             return
 
         now = time.time()
-        if cache.cooldown_until and now < cache.cooldown_until:
-            self._unregister_server_tools(server_id)
-            return
+        # cooldown removed
 
         if cache.last_probe_at and now - cache.last_probe_at < self._probe_ttl_seconds and cache.tools:
             return
+
+        cache.status = "loading"
 
         # stdio: probe is redundant — list_tools() internally calls _ensure_connected()
         _timer = time.time()
@@ -268,16 +298,18 @@ class MCPManager:
         _log.info(f'[MCP] {server_id}: list_tools took {int((time.time()-_timer)*1000)}ms, ok={ok}')
         cache.last_probe_at = now
         if not ok:
-            cache.status = "error"
+            manifest = load_manifest_cache(inst, server_id)
+            cache.status = "stale" if manifest else "error"
             cache.last_error = err or "list_tools failed"
             cache.fail_count += 1
             _log.error(f'[MCP] {server_id}: list_tools failed: {err}')
-            if cache.fail_count >= self._fail_threshold:
-                cache.cooldown_until = now + self._cooldown_seconds
+            # cooldown removed
             self._unregister_server_tools(server_id)
             return
 
         tools = _extract_tools(result)
+        manifest_payload = _manifest_payload_from_tools(cfg, tools)
+        save_manifest_cache(inst, server_id, manifest_payload)
         tools_hash = _hash_tools(tools)
         if tools_hash != cache.tools_hash:
             self._unregister_server_tools(server_id)
@@ -285,10 +317,9 @@ class MCPManager:
             cache.tools = tools
             cache.tools_hash = tools_hash
         _log.info(f'[MCP] {server_id}: {len(tools)} tools registered')
-        cache.status = "connected"
+        cache.status = "ready"
         cache.last_error = ""
         cache.fail_count = 0
-        cache.cooldown_until = 0.0
 
     def call_tool(self, server_id: str, tool_name: str, arguments: Dict[str, Any]) -> Tuple[bool, Any, Optional[str], int]:
         inst = _instance_dir_from_env()
@@ -302,15 +333,14 @@ class MCPManager:
             self._cache[server_id] = cache
 
         now = time.time()
-        if cache.cooldown_until and now < cache.cooldown_until:
-            return False, None, "server in cooldown", 0
+        # cooldown removed
 
         if client is None:
             return False, None, "server not available", 0
 
         ok, result, err, dur = client.call_tool(tool_name, arguments or {})
         if ok:
-            cache.status = "connected"
+            cache.status = "ready"
             cache.last_error = ""
             cache.fail_count = 0
             cache.cooldown_until = 0.0
@@ -319,8 +349,7 @@ class MCPManager:
         cache.status = "error"
         cache.last_error = err or "call_tool failed"
         cache.fail_count += 1
-        if cache.fail_count >= self._fail_threshold:
-            cache.cooldown_until = now + self._cooldown_seconds
+        # cooldown removed
         return False, result, cache.last_error, dur
 
     def start_poller(self, interval_seconds: int = 86400) -> None:
@@ -368,6 +397,46 @@ class MCPManager:
                     }
                 )
             return {"global": {"count": len(reg)}, "effective": servers}
+
+    def build_awareness_summary(self, instance_dir: Optional[Path] = None) -> Optional[str]:
+        inst = instance_dir or _instance_dir_from_env()
+        if inst is None:
+            return None
+
+        with self._lock:
+            self._ensure_loaded(inst)
+            servers = list(self._servers.values())
+            cache_map = dict(self._cache)
+
+        if not servers:
+            return None
+
+        lines: List[str] = ["## MCP 能力概览", ""]
+        for cfg in servers:
+            cache = cache_map.get(cfg.server_id) or ServerCache(tools={})
+            manifest = load_manifest_cache(inst, cfg.server_id) or {}
+            status = _normalize_status(cache.status, cache.tools)
+
+            desc = cfg.description or str(manifest.get("description") or "").strip() or "已启用 MCP 服务"
+            label = f"{cfg.server_id}"
+            if cfg.title and cfg.title != cfg.server_id:
+                label = f"{cfg.server_id} / {cfg.title}"
+            lines.append(f"- `{label}` ({cfg.transport}): {desc} [status={status}]")
+            if cfg.use_cases:
+                lines.append(f"适用: {', '.join(cfg.use_cases[:3])}")
+            actions = manifest.get("actions") if isinstance(manifest, dict) else None
+            if isinstance(actions, list) and actions:
+                preview = ", ".join(
+                    str(item.get("name") or "").strip()
+                    for item in actions[:5]
+                    if isinstance(item, dict) and str(item.get("name") or "").strip()
+                )
+                if preview:
+                    lines.append(f"操作: {preview}")
+            if status in {"error", "stale"} and cache.last_error:
+                lines.append(f"错误: {cache.last_error}")
+
+        return "\n".join(lines)
 
     @property
     def registry(self) -> Optional[ToolRegistry]:
