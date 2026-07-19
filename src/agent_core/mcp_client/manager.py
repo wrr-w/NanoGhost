@@ -15,7 +15,10 @@ from .manifest_cache import load_manifest_cache, save_manifest_cache
 from .stdio_client import MCPStdioClient
 
 
-_MCP_TOOL_PREFIX = "mcp_"
+_MCP_TOOL_PREFIX = "mcp_"  # reserved, no longer auto-registered
+
+def _path_join(parts: List[str]) -> str:
+    return "/" + "/".join(parts)
 
 
 @dataclass
@@ -93,51 +96,7 @@ def _normalize_status(raw_status: str, tools: Optional[Dict[str, Dict[str, Any]]
     return status
 
 
-def _build_server_tool_schema(server_id: str, tools: Dict[str, Dict[str, Any]]) -> Tuple[str, str, Dict[str, Any]]:
-    """为整个 MCP 服务器生成一个组合工具 schema。
 
-    将所有工具折叠为一个工具，通过 action 参数路由。
-    """
-    exposed = f"{_MCP_TOOL_PREFIX}{server_id}"
-
-    # 构建 action enum 和描述
-    actions = []
-    property_schemas = {}
-    for tname, tobj in tools.items():
-        desc = str(tobj.get("description") or "").strip()
-        actions.append({"name": tname, "description": desc})
-
-        # 收集该工具的 inputSchema 作为说明
-        inp = tobj.get("inputSchema")
-        if isinstance(inp, dict):
-            property_schemas[tname] = {
-                "description": desc,
-                "inputSchema": inp,
-            }
-
-    action_names = [a["name"] for a in actions]
-    action_desc = "; ".join(f"{a['name']}: {a['description']}" for a in actions[:5])
-    if len(actions) > 5:
-        action_desc += f"; ... 共 {len(actions)} 个操作"
-
-    params = {
-        "type": "object",
-        "properties": {
-            "action": {
-                "type": "string",
-                "enum": action_names,
-                "description": f"要执行的操作。可选: {', '.join(action_names)}",
-            },
-            "params": {
-                "type": "object",
-                "description": f"操作参数，具体字段取决于 action 的选择。{action_desc}",
-            },
-        },
-        "required": ["action"],
-    }
-
-    desc = f"[MCP:{server_id}] 调用 {server_id} 服务器的 MCP 工具。通过 action 选择具体操作，params 传入对应参数。"
-    return exposed, desc, params
 
 
 class MCPManager:
@@ -157,6 +116,134 @@ class MCPManager:
     def attach_tool_registry(self, registry: ToolRegistry) -> None:
         with self._lock:
             self._registry = registry
+        if registry is not None:
+            self._register_meta_tools(registry)
+
+    def _register_meta_tools(self, registry: ToolRegistry) -> None:
+        """注册 MCP 渐进披露树形导航工具（全局一次）。"""
+        if getattr(self, '_meta_registered', False):
+            return
+        self._meta_registered = True
+
+        registry.register(
+            "explore_mcp",
+            self._handle_explore_mcp,
+            description="树形导航 MCP 能力。path 类似文件系统路径：'/' 根节点列出所有服务器，'/server_id' 进入服务器查看 action，'/server_id/action' 为叶子节点显示完整参数 Schema。叶子节点带 params 参数可直接执行。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "树中路径，默认 '/'。'/' 返回所有服务器；'/capture' 返回 capture 下的操作；'/capture/status' 为叶子节点，显示参数 Schema，带 params 则执行。",
+                    },
+                    "params": {
+                        "type": "object",
+                        "description": "仅叶子节点使用。执行该 action 的参数，按返回的 inputSchema 构造 JSON。不带 params 时只返回 Schema。",
+                    },
+                },
+                "required": ["path"],
+            },
+            category="system",
+        )
+
+    def _handle_explore_mcp(self, args: Dict[str, Any], ctx: Dict[str, Any]) -> ToolResult:
+        raw_path = (args.get("path") or "/").strip()
+        exec_params = args.get("params")
+        if not raw_path.startswith("/"):
+            raw_path = "/" + raw_path
+
+        with self._lock:
+            servers = dict(self._servers)
+            cache_map = dict(self._cache)
+
+        # ---- 根节点: 列出所有服务器 ----
+        if raw_path == "/":
+            items = []
+            for sid, cfg in sorted(servers.items()):
+                cache = cache_map.get(sid) or ServerCache(tools={})
+                status = _normalize_status(cache.status, cache.tools)
+                items.append({
+                    "node_type": "server",
+                    "name": sid,
+                    "title": cfg.title or sid,
+                    "description": cfg.description or "",
+                    "status": status,
+                    "actions_count": len(cache.tools or {}),
+                })
+            return ToolResult(ok=True, data={
+                "path": "/",
+                "node_type": "root",
+                "children": items,
+                "hint": "用 explore_mcp(path='/server_id') 进入某个服务器查看其 action。",
+            })
+
+        # ---- 中间/叶子节点: /server_id 或 /server_id/action ----
+        parts = [p for p in raw_path.split("/") if p]
+        if len(parts) < 1:
+            return ToolResult(ok=False, error=f"无效路径: {raw_path}")
+
+        server_id = parts[0]
+        if server_id not in servers:
+            return ToolResult(ok=False, error=f"未知服务器: {server_id}，可用: {list(servers.keys())}")
+
+        cache = cache_map.get(server_id) or ServerCache(tools={})
+        tools_dict = cache.tools or {}
+
+        # ---- 中间节点: /server_id ----
+        if len(parts) == 1:
+            items = []
+            for tname, tobj in sorted(tools_dict.items()):
+                desc = str(tobj.get("description") or "").strip()
+                items.append({
+                    "node_type": "action",
+                    "name": tname,
+                    "description": desc[:200],
+                })
+            cfg = servers[server_id]
+            return ToolResult(ok=True, data={
+                "path": raw_path,
+                "node_type": "server",
+                "server_id": server_id,
+                "title": cfg.title or server_id,
+                "description": cfg.description or "",
+                "children": items,
+                "hint": "用 explore_mcp(path='/server_id/action_name') 查看 action 的完整参数。带 params 可直接执行。",
+            })
+
+        # ---- 叶子节点: /server_id/action ----
+        action_name = parts[1]
+        tobj = tools_dict.get(action_name)
+        if not tobj:
+            return ToolResult(ok=False, error=f"在服务器 {server_id} 上未找到 action: {action_name}，可用: {list(tools_dict.keys())}")
+
+        input_schema = tobj.get("inputSchema") or {}
+        desc = str(tobj.get("description") or "").strip()
+
+        # 带 params → 直接执行
+        if exec_params is not None:
+            ok, data, err, dur = self.call_tool(server_id, action_name, exec_params)
+            payload = {
+                "ok": ok,
+                "data": data if ok else (data or {}),
+                "error": None if ok else (err or "mcp tool call failed"),
+                "meta": {
+                    "server_id": server_id,
+                    "tool_name": action_name,
+                    "duration_ms": int(dur or 0),
+                },
+            }
+            return ToolResult(ok=ok, data=payload)
+
+        # 不带 params → 只返回 Schema
+        return ToolResult(ok=True, data={
+            "path": raw_path,
+            "node_type": "action",
+            "server_id": server_id,
+            "action": action_name,
+            "description": desc,
+            "inputSchema": input_schema,
+            "hint": "再次调用 explore_mcp(path=...), 带上 params 参数即可执行此 action。",
+        })
 
     def _ensure_loaded(self, instance_dir: Path, force: bool = False) -> None:
         inst_key = str(instance_dir)
@@ -176,64 +263,10 @@ class MCPManager:
         self._last_loaded_instance = inst_key
 
     def _unregister_server_tools(self, server_id: str) -> None:
-        reg = self._registry
-        if reg is None:
-            return
-        exposed = f"{_MCP_TOOL_PREFIX}{server_id}"
-        reg.unregister(exposed)
+        pass
 
     def _register_server_tools(self, server_id: str, tools: Dict[str, Dict[str, Any]]) -> None:
-        reg = self._registry
-        if reg is None:
-            return
-        
-        # 读取 action 级白名单，过滤 tools
-        inst = _instance_dir_from_env()
-        if inst is not None:
-            cfg_path = inst / "config.yaml"
-            try:
-                with open(str(cfg_path), encoding="utf-8") as f:
-                    import yaml
-                    cfg = yaml.safe_load(f) or {}
-                mcp_cfg = cfg.get("mcp") or {}
-                action_allowlist = mcp_cfg.get("action_allowlist") or {}
-                allowed = action_allowlist.get(server_id)
-                if allowed is not None and isinstance(allowed, list):
-                    filtered = {}
-                    for aname in allowed:
-                        if aname in tools:
-                            filtered[aname] = tools[aname]
-                    if filtered:
-                        tools = filtered
-                    else:
-                        # 白名单不为空但全被过滤掉了 => 该服务器无可用工具
-                        return
-            except Exception:
-                pass
-        
-        exposed, desc, params = _build_server_tool_schema(server_id, tools)
-
-        def _handler(args: Dict[str, Any], ctx: Dict[str, Any], _sid=server_id) -> ToolResult:
-            action = (args.get("action") or "").strip()
-            tool_params = args.get("params") or {}
-            if not action:
-                return ToolResult(ok=False, error=f"缺少 action 参数，可选: {list(tools.keys())}")
-            if action not in tools:
-                return ToolResult(ok=False, error=f"未知 action: {action}，可选: {list(tools.keys())}")
-            ok, data, err, dur = self.call_tool(_sid, action, tool_params)
-            payload = {
-                "ok": ok,
-                "data": data if ok else (data or {}),
-                "error": None if ok else (err or "mcp tool call failed"),
-                "meta": {
-                    "server_id": _sid,
-                    "tool_name": action,
-                    "duration_ms": int(dur or 0),
-                },
-            }
-            return ToolResult(ok=ok, data=payload)
-
-        reg.register(exposed, _handler, description=desc, parameters=params, category="mcp")
+        pass
 
     def refresh_all(self, instance_dir: Optional[Path] = None) -> None:
         inst = instance_dir or _instance_dir_from_env()

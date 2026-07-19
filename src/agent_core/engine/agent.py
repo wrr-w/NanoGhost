@@ -26,12 +26,15 @@ import logging
 import asyncio
 import json
 import time
+import os
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from collections.abc import AsyncIterator
 
 
 from .messages import build_agent_messages_with_history
-from agent_core.tool.models import ToolResult
+from agent_core.tool.models import ToolCall, ToolResult
 from agent_core.memory.postprocess import postprocess_turn
 
 from agent_core.config import AgentConfig
@@ -90,16 +93,14 @@ class Agent:
         if auto_register_tools:
             register_builtins(self.tool_registry)
             try:
-                from agent_core.mcp import MCPManager
+                from agent_core.mcp_client import MCPManager
                 from agent_core.config import load_instance_config
 
                 inst_cfg = load_instance_config()
-                cooldown = inst_cfg.extra.get("mcp_cooldown_seconds", 60)
                 fail_threshold = inst_cfg.extra.get("mcp_fail_threshold", 3)
                 probe_ttl = inst_cfg.extra.get("mcp_probe_ttl_seconds", 60)
 
                 self._mcp_manager = MCPManager(
-                    cooldown_seconds=cooldown,
                     fail_threshold=fail_threshold,
                     probe_ttl_seconds=probe_ttl,
                 )
@@ -107,7 +108,9 @@ class Agent:
                 import threading
                 threading.Thread(target=self._mcp_manager.refresh_all, daemon=True).start()
                 self._mcp_manager.start_poller()
-            except Exception:
+            except Exception as _mcp_e:
+                _mcp_logger = logging.getLogger('agent_core')
+                _mcp_logger.exception(f'[MCP] init failed: {_mcp_e}')
                 self._mcp_manager = None
 
         # SubAgent 管理
@@ -388,6 +391,17 @@ class AgentExecutor:
                 for r in self.agent._hook_bus.emit("before_llm_call", messages=messages, config=config):
                     if r is not None:
                         messages = r
+                _session_tag = session_id or "unknown"
+                _channel = tool_context.get("channel", "unknown") if isinstance(tool_context, dict) else "unknown"
+                _dump_path = Path(os.environ.get("INSTANCE_DIR", ".")) / "runtime" / f"llm_{_session_tag[:8]}.json"
+                _dump_data = {
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "session_id": session_id,
+                    "channel": _channel,
+                    "tools_schemas": tools_schemas,
+                    "messages": messages,
+                }
+                _dump_path.write_text(json.dumps(_dump_data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
                 _t_llm = time.time()
                 response = await asyncio.to_thread(self.agent.llm.chat, messages, temperature=0.1, tools=tools_schemas)
                 logger.info(f"[Agent] LLM call 耗时={time.time()-_t_llm:.1f}s")
@@ -403,6 +417,77 @@ class AgentExecutor:
             if not response:
                 yield ("error", {"error": "LLM returned empty response"})
                 return
+
+            # ---- 兜底：content 中内嵌 tool_calls JSON（常见于 reasoning 模型降级） ----
+            if response.content and not response.has_tool_calls:
+                parsed_tool_calls = _try_extract_tool_calls_from_content(response.content)
+                if parsed_tool_calls:
+                    response.tool_calls = parsed_tool_calls
+                    logger.info(f"[Agent] 从 content 中解析到 {len(parsed_tool_calls)} 个 tool_calls，走 tool_call 分支")
+                    if response.content:
+                        yield ("text_stream", {"content": response.content})
+                    assistant_msg = {
+                        "role": "assistant",
+                        "content": response.content,
+                        "reasoning_content": response.reasoning_content,
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.name,
+                                    "arguments": json.dumps(tc.arguments, ensure_ascii=False),
+                                },
+                            }
+                            for tc in parsed_tool_calls
+                        ],
+                    }
+                    messages.append(assistant_msg)
+                    if session_id:
+                        try:
+                            await asyncio.to_thread(
+                                self.agent.db.add_agent_message,
+                                session_id, "assistant", json.dumps(assistant_msg, ensure_ascii=False),
+                                reasoning_content=response.reasoning_content,
+                                root_id=root_id,
+                            )
+                        except Exception as e:
+                            logger.error(f"[Agent] save message error: {e}")
+                    for tc in parsed_tool_calls:
+                        yield ("tool_call", {
+                            "name": tc.name,
+                            "preview": _arg_preview(tc.arguments),
+                            "id": tc.id,
+                        })
+                        _blocked = False
+                        for _r in self.agent._hook_bus.emit("before_tool_dispatch", name=tc.name, args=tc.arguments, ctx=tool_context):
+                            if _r is False:
+                                result = ToolResult(ok=False, error=f"工具 [{tc.name}] 被 hook 拦截", signal="__continue__")
+                                _blocked = True
+                                break
+                            elif isinstance(_r, dict):
+                                tc.arguments = _r
+                        if not _blocked:
+                            result = await asyncio.to_thread(self.agent.tool_registry.dispatch, tc.name, tc.arguments, tool_context)
+                        for _r in self.agent._hook_bus.emit("after_tool_dispatch", name=tc.name, result=result, ctx=tool_context):
+                            if _r is not None:
+                                result = _r
+                        for ev in _pending_events:
+                            yield ev
+                        _pending_events.clear()
+                        yield ("tool_result", {
+                            "name": tc.name,
+                            "ok": result.ok,
+                            "summary": result.content_text[:200] if result.ok else (result.error or "")[:200],
+                        })
+                        if result.signal == "__ask__":
+                            return
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": result.content_text[:3000],
+                        })
+                    continue
 
             # ---- Text-only = final reply ----
             if response.content and not response.has_tool_calls:
@@ -528,6 +613,79 @@ class AgentExecutor:
             "steps": all_steps_out,
         }
         yield ("done", payload)
+
+
+def _try_extract_tool_calls_from_content(content: str) -> Optional[List["ToolCall"]]:
+    """尝试从 LLM 返回的 content 文本中提取 tool_calls JSON。
+
+    DeepSeek 等 reasoning 模型有时会在 content 中以 JSON 格式返回
+    {"reasoning_content": "...", "tool_calls": [{...}]}，而非原生 tool_calls 字段。
+    """
+    if not content:
+        return None
+    cleaned = content.strip()
+    # 尝试去掉外层可能的 markdown 代码块
+    if cleaned.startswith("```"):
+        end = cleaned.find("```", 3)
+        if end > 0:
+            cleaned = cleaned[3:end].strip()
+    # 提取最外层的 JSON 对象
+    brace_start = cleaned.find("{")
+    brace_end_len = _find_matching_brace(cleaned, brace_start) if brace_start >= 0 else -1
+    if brace_start < 0 or brace_end_len <= 0:
+        return None
+    json_str = cleaned[brace_start:brace_start + brace_end_len]
+    try:
+        obj = json.loads(json_str)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    tcs = obj.get("tool_calls") or obj.get("toolCalls") or obj.get("function_call")
+    if not tcs:
+        # 也可能是单个 function_call 格式
+        fc = obj.get("function")
+        if isinstance(fc, dict) and fc.get("name"):
+            tcs = [fc]
+    if not tcs:
+        return None
+    if not isinstance(tcs, list):
+        tcs = [tcs]
+    result = []
+    for i, tc in enumerate(tcs):
+        if not isinstance(tc, dict):
+            continue
+        tc_id = tc.get("id") or f"call_fallback_{i}"
+        tc_name = tc.get("name") or ""
+        if not tc_name:
+            fc = tc.get("function") or {}
+            tc_name = fc.get("name") if isinstance(fc, dict) else ""
+        tc_args = tc.get("arguments") or {}
+        if isinstance(tc.get("function"), dict):
+            tc_args = tc["function"].get("arguments") or tc_args
+        if isinstance(tc_args, str):
+            try:
+                tc_args = json.loads(tc_args)
+            except (json.JSONDecodeError, ValueError):
+                tc_args = {"_raw": tc_args}
+        if not tc_name:
+            continue
+        result.append(ToolCall(id=tc_id, name=tc_name, arguments=tc_args))
+    return result or None
+
+
+def _find_matching_brace(text: str, start: int) -> int:
+    """找到从 start 位置 '{' 开始的匹配 '}' 的长度。"""
+    if start < 0 or start >= len(text) or text[start] != "{":
+        return -1
+    depth = 0
+    for i in range(start, len(text)):
+        ch = text[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i - start + 1
+    return -1
 
 
 def _arg_preview(args: dict) -> str:
