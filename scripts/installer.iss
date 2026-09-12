@@ -61,6 +61,24 @@ Source: "update.default.json"; DestDir: "{%USERPROFILE}\.nanoghost"; DestName: "
 ;   3. 不删用户数据（[UninstallDelete]）—— 见下方说明
 ; 保留的只有: 程序文件 + 卸载项 + 下面那条 PATH 条目。
 
+; ── 部署注意事项 ──────────────────────────────────────────────
+; 1. 用户数据在 %USERPROFILE%\.nanoghost（实例、记忆、会话库、密钥），不在安装目录内，
+;    升级和卸载都不会动它。这是有意为之，不要加 UninstallDelete。
+;
+; 2. 上面的 CloseApplications=yes 会在安装时关掉正在运行的 NanoGhost。如果外部管理器
+;    带自动拉起逻辑，它可能在文件覆盖期间把进程重新拉起来，导致覆盖失败（exe 被占用）。
+;    升级前的正确做法：让外部管理器先停掉进程，装完再拉起。
+;    程序内的 `NanoGhost.exe update` 同理——它最多等 60 秒进程退出，同样会被抢跑。
+;
+; 3. **这个安装包会改 PATH**（见下面 [Registry] 与 [Code]）。外部管理器用绝对路径启动
+;    NanoGhost，不受影响；改 PATH 只是为了让人在任意目录敲得出 `NanoGhost.exe`。
+;    装完不需要重登录 —— 安装程序会广播 WM_SETTINGCHANGE。卸载时只删自己加的那一段。
+;
+; 4. 部署后由外部管理器调起的命令行参考（实例名以实际为准）：
+;      NanoGhost.exe -I <实例名>                    CLI 交互模式
+;      NanoGhost.exe gateway start -I <实例名>      守护进程（飞书 bot）
+;    实例由首次运行的配置向导创建，落在 %USERPROFILE%\.nanoghost\instances\<实例名>\
+
 [Registry]
 ; 把安装目录加进 PATH —— 安装程序自己写，不留给人手动加。
 ; 文档里那些 `NanoGhost.exe -I <实例名>` / `NanoGhost.exe gateway start` 都是当成
@@ -187,21 +205,3 @@ begin
   RegDeleteValue(EnvRoot, 'Software\NanoGhost', 'PathEntryAdded');
   BroadcastEnvChange;
 end;
-
-; ── 部署注意事项 ──────────────────────────────────────────────
-; 1. 用户数据在 %USERPROFILE%\.nanoghost（实例、记忆、会话库、密钥），不在安装目录内，
-;    升级和卸载都不会动它。这是有意为之，不要加 UninstallDelete。
-;
-; 2. 上面的 CloseApplications=yes 会在安装时关掉正在运行的 NanoGhost。如果外部管理器
-;    带自动拉起逻辑，它可能在文件覆盖期间把进程重新拉起来，导致覆盖失败（exe 被占用）。
-;    升级前的正确做法：让外部管理器先停掉进程，装完再拉起。
-;    程序内的 `NanoGhost.exe update` 同理——它最多等 60 秒进程退出，同样会被抢跑。
-;
-; 3. **这个安装包会改 PATH**（见上面 [Registry] 与 [Code]）。外部管理器用绝对路径启动
-;    NanoGhost，不受影响；改 PATH 只是为了让人在任意目录敲得出 `NanoGhost.exe`。
-;    装完不需要重登录 —— 安装程序会广播 WM_SETTINGCHANGE。卸载时只删自己加的那一段。
-;
-; 4. 部署后由外部管理器调起的命令行参考（实例名以实际为准）：
-;      NanoGhost.exe -I <实例名>                    CLI 交互模式
-;      NanoGhost.exe gateway start -I <实例名>      守护进程（飞书 bot）
-;    实例由首次运行的配置向导创建，落在 %USERPROFILE%\.nanoghost\instances\<实例名>\
