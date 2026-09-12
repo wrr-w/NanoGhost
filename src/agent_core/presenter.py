@@ -179,11 +179,17 @@ async def run_agent_turn(
                             out_images.append(_b64)
 
             if ev_type == "ask_user":
-                reply_text = _format_ask_user_text(ev_data or {})
+                ask_text = _format_ask_user_text(ev_data or {})
+                prefix = text_stream_content.strip()
+                text_stream_content = ""
+                reply_text = f"{prefix}\n\n{ask_text}" if prefix else ask_text
                 break
 
             if ev_type == "error":
-                reply_text = f"(Agent error: {((ev_data or {}).get('error') or 'unknown')})"
+                prefix = text_stream_content.strip()
+                text_stream_content = ""
+                err = f"(Agent error: {((ev_data or {}).get('error') or 'unknown')})"
+                reply_text = f"{prefix}\n\n{err}" if prefix else err
                 break
 
             if ev_type == "done":
