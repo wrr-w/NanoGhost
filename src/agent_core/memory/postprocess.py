@@ -22,9 +22,6 @@ async def postprocess_turn(
 ) -> None:
     try:
         flow_hash = None
-        if not all_steps_out:
-            logger.info("[AgentMemory] no steps to record")
-            return
 
         intent = await asyncio.to_thread(
             summarize_intent,

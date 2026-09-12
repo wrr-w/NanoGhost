@@ -13,8 +13,7 @@ def update_graph_ml(
     db: DatabasePort,
     namespace: Optional[str] = None,
 ) -> None:
-    if not steps or len(steps) < 2:
-        logger.info(f"[AgentMemory][Graph] skip: need >=2 steps, got {len(steps) if steps else 0}")
+    if not steps:
         return
 
     from agent_core.memory.classifier import classify

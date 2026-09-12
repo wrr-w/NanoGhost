@@ -135,7 +135,7 @@ def summarize_to_memory_md(
     round_number: int,
 ) -> list[dict]:
     """每 N 轮用 LLM 判断是否有值得记入 memory.md 的信息。"""
-    if round_number % 10 != 0:
+    if round_number % 3 != 0:
         return []
     try:
         history = db.get_agent_messages(session_id) if session_id else []

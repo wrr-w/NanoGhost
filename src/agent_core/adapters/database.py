@@ -65,7 +65,10 @@ class SqliteDatabase(DatabasePort):
                     id TEXT PRIMARY KEY, flow_hash TEXT,
                     intent_summary TEXT,
                     intent_vector_json TEXT,
-                    steps_json TEXT, success_count INTEGER DEFAULT 0,
+                    intent_examples_json TEXT DEFAULT '[]',
+                    steps_json TEXT,
+                    flow_signature_json TEXT DEFAULT '{}',
+                    success_count INTEGER DEFAULT 0,
                     total_rounds INTEGER DEFAULT 0,
                     trigger_count INTEGER DEFAULT 0,
                     scene_tag TEXT, namespace TEXT,
@@ -233,15 +236,18 @@ class SqliteDatabase(DatabasePort):
         with self._conn() as conn:
             conn.execute("""
                 INSERT INTO agent_memory_cards (id, flow_hash, intent_summary,
-                    intent_vector_json, steps_json,
+                    intent_vector_json, intent_examples_json, steps_json,
+                    flow_signature_json,
                     success_count, total_rounds,
                     trigger_count, scene_tag, namespace, l1_code, created_at, updated_at,
                     experience_notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     intent_summary=excluded.intent_summary,
                     intent_vector_json=excluded.intent_vector_json,
+                    intent_examples_json=excluded.intent_examples_json,
                     steps_json=excluded.steps_json,
+                    flow_signature_json=excluded.flow_signature_json,
                     success_count=excluded.success_count,
                     total_rounds=excluded.total_rounds,
                     trigger_count=excluded.trigger_count,
@@ -252,7 +258,9 @@ class SqliteDatabase(DatabasePort):
             """, (
                 card.get("id"), card.get("flow_hash"), card.get("intent_summary"),
                 json.dumps(card.get("intent_vector") or [], ensure_ascii=False),
+                json.dumps(card.get("intent_examples") or [], ensure_ascii=False),
                 json.dumps(card.get("steps") or [], ensure_ascii=False),
+                json.dumps(card.get("flow_signature") or {}, ensure_ascii=False),
                 int(card.get("success_count") or 0), int(card.get("total_rounds") or 0),
                 int(card.get("trigger_count") or 0), card.get("scene_tag"),
                 card.get("namespace"), int(card.get("l1_code") or 0),
