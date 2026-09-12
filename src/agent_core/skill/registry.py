@@ -19,6 +19,17 @@ class SkillRegistry:
         self._skill_defs: Dict[str, SkillDefinition] = {}
 
     def _enabled_only(self) -> Optional[Set[str]]:
+        """本实例允许用哪些技能。返回 None = 不限制，空集 = 全禁。
+
+        三种情况，别把后两种看成一回事：
+            没有实例目录   → None，不限制（`~/.agents/skills` 里有什么用什么）
+            有实例、配了   → 那几条
+            有实例、没配   → **空集，一个都不给**
+
+        最后一条是有意的：技能按实例白名单走，没白名单就是关着（和 MCP 的
+        `enabled_only` 同一套语义）。所以给实例开技能必须显式列名字，光把 SKILL.md
+        放进 `<实例>/skills` 是不够的 —— 目录只决定"扫得到"，白名单决定"用得了"。
+        """
         inst = (os.getenv("INSTANCE_DIR") or "").strip()
         if not inst:
             return None

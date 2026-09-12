@@ -11,9 +11,15 @@ agent-core 独立启动入口。
     python run.py --list-skills                        # 列出可用技能
     python run.py --skill lark-calendar                # 查看技能内容
 
-    # 飞书模式
-    set AGENT_MODE=feishu
-    python run.py
+    # 飞书模式（指定实例；该实例的 channel_directory.json 里 feishu.enabled 为 true）
+    python run.py -I <实例目录>
+    # 想在开了飞书的实例上跑一次交互终端，就显式覆盖：
+    set AGENT_MODE=cli
+    python run.py -I <实例目录>
+
+跑成什么模式由实例的 channel_directory.json 决定（网关只读它）。带 -I 时环境变量
+AGENT_MODE 是"调用方显式指定"，优先级最高，但实例 .env 里的 AGENT_MODE 会被忽略 ——
+见 src/agent_core/config.py 的 resolve_agent_mode。
 """
 
 import asyncio
@@ -31,6 +37,7 @@ if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
 from dotenv import load_dotenv
+from agent_core.config import resolve_agent_mode
 from agent_core.memory.files import read_long_term_memory_block
 from agent_core.setup_wizard import ensure_llm_configured
 from agent_core.update import auto_check_and_notify
@@ -73,12 +80,21 @@ def _preparse_instance_dir(argv: List[str]) -> str:
 def _bootstrap_instance(argv: List[str]) -> None:
     instance_dir = _clean_env_value(_preparse_instance_dir(argv))
 
+    # 在**加载任何 .env 之前**就把调用方指定的模式记下来。网关孵 worker 时是靠
+    # start_worker(env_overrides={"AGENT_MODE": wk}) 把意图传进来的，而下面那句
+    # load_dotenv(override=True) 会把 .env 里的 AGENT_MODE 顶到这个值之上 —— 先
+    # 记后加载，才拿得到调用方的原话。
+    explicit_mode = _clean_env_value(os.getenv("AGENT_MODE"))
+
     global_env = os.path.join(os.path.expanduser("~"), ".nanoghost", ".env")
     if os.path.isfile(global_env):
         load_dotenv(dotenv_path=global_env, override=False)
     _normalize_llm_env()
 
     if not instance_dir:
+        # 没有实例目录就没法反推模式，调用方传的（或没传）就是最终答案
+        if explicit_mode:
+            os.environ["AGENT_MODE"] = explicit_mode
         return
 
     instance_dir = os.path.abspath(os.path.expanduser(instance_dir))
@@ -97,6 +113,15 @@ def _bootstrap_instance(argv: List[str]) -> None:
     if os.path.isfile(dotenv_path):
         load_dotenv(dotenv_path=dotenv_path, override=True)
         _normalize_llm_env()
+
+    # 运行模式**不归 .env 管** —— 唯一开关是实例的 channel_directory.json（网关也只
+    # 读它）。.env 里如果还留着 AGENT_MODE，上面那句 override=True 正好会把它读进来，
+    # 所以这里必须重新裁一次，且必须在 .env 之后。见 agent_core/config.py 的说明。
+    mode, mode_source = resolve_agent_mode(instance_dir, explicit=explicit_mode)
+    os.environ["AGENT_MODE"] = mode
+    # 让 `nanoghost diag` 能把"为什么是这个模式"一并打出来 —— 这个模式一旦错了，
+    # 症状是"控制台说启用成功、进程却在秒退"，光看 AGENT_MODE 一眼看不出所以然
+    os.environ["AGENT_MODE_SOURCE"] = mode_source
 
 
 _bootstrap_instance(sys.argv)
@@ -279,48 +304,10 @@ def run_cli_chat():
     image_port = SqliteImagePort(db)
 
     namespace = _clean_env_value(os.getenv("AGENT_NAMESPACE")) or "cli-agent"
-    # 从 config.yaml 读取技能搜索目录配置
-    import os as _sk_os
-    from agent_core.utils.yaml_subset import load_yaml_subset as _sk_load
-    _cfg = _sk_load(_sk_os.path.join(_sk_os.environ.get("INSTANCE_DIR", ""), "config.yaml"))
-    _sk_cfg = _cfg.get("skills", {}) if isinstance(_cfg, dict) else {}
-    _inst_dir = _sk_os.environ.get("INSTANCE_DIR", "")
-    _extra_dirs = []
-    # skills.dirs: 完全控制技能目录列表
-    _sk_dirs = _sk_cfg.get("dirs")
-    if isinstance(_sk_dirs, list) and _sk_dirs:
-        for _d in _sk_dirs:
-            _p = str(_d).strip()
-            if _p.startswith("./") or _p.startswith(".\\"):
-                _p = _sk_os.path.join(_inst_dir, _p[2:])
-            elif _p == ".":
-                _p = _inst_dir
-            else:
-                _p = _sk_os.path.expanduser(_p)
-            if _p and _sk_os.path.isdir(_p):
-                _extra_dirs.append(_p)
-        # 当配置了 dirs 时，不设置 AGENTS_SKILLS_DIR 环境变量（让 discovery.py 用 ~/.agents/skills 兜底）
-        if "AGENTS_SKILLS_DIR" in _sk_os.environ:
-            del _sk_os.environ["AGENTS_SKILLS_DIR"]
-    else:
-        # 向后兼容：使用 extra_dirs
-        _sk_extra = _sk_cfg.get("extra_dirs", [])
-        if isinstance(_sk_extra, list):
-            for _d in _sk_extra:
-                _p = str(_d).strip()
-                if _p.startswith("./") or _p.startswith(".\\"):
-                    _p = _sk_os.path.join(_inst_dir, _p[2:])
-                elif _p == ".":
-                    _p = _inst_dir
-                else:
-                    _p = _sk_os.path.expanduser(_p)
-                if _p and _sk_os.path.isdir(_p):
-                    _extra_dirs.append(_p)
-        # 默认兜底：使用 instance/skills
-        if not _extra_dirs:
-            _inst_skills = _sk_os.path.join(_inst_dir, "skills")
-            if _sk_os.path.isdir(_inst_skills):
-                _extra_dirs.append(_inst_skills)
+    # 技能目录统一由 resolve_instance_skill_dirs 解析（通道那边用的是同一个函数，
+    # 免得两边对"实例技能在哪"各有一套说法）
+    from agent_core.skill.discovery import resolve_instance_skill_dirs
+    _extra_dirs = resolve_instance_skill_dirs()
 
     agent = Agent(db=db, llm=llm, image_port=image_port, namespace=namespace,
                   skill_extra_dirs=_extra_dirs or None)
@@ -504,8 +491,12 @@ async def run_feishu():
     image_port = SqliteImagePort(db)
 
     from agent_core import Agent
+    from agent_core.skill.discovery import resolve_instance_skill_dirs
     namespace = _clean_env_value(os.getenv("AGENT_NAMESPACE")) or "feishu-agent"
-    agent = Agent(db=db, llm=llm, image_port=image_port, namespace=namespace)
+    # 技能是实例级的，通道也得带上 —— 不带的话实例 <实例>/skills 里的技能对
+    # 机器人凭空消失，只剩全局 ~/.agents/skills
+    agent = Agent(db=db, llm=llm, image_port=image_port, namespace=namespace,
+                  skill_extra_dirs=resolve_instance_skill_dirs() or None)
 
     sys_prompt = assemble_sys_prompt()
     logger.info("System prompt 长度: %s 字", len(sys_prompt))

@@ -1,5 +1,7 @@
 import getpass
+import json
 import os
+import time
 
 
 def _global_config_dir() -> str:
@@ -102,6 +104,45 @@ def _copy_env_template(dst: str) -> None:
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         with open(dst, "w", encoding="utf-8") as f:
             f.write(content)
+
+
+def _write_channel_config(instance_dir: str, *, feishu_enabled: bool) -> str:
+    """把通道开关落到实例的 channel_directory.json。
+
+    这里（而不是 .env）才是"这个实例是飞书机器人还是终端"的唯一开关 —— 网关
+    _auto_start_workers 读的就是它，控制台的通道面板写的也是它。原因见
+    agent_core/config.py 里 resolve_agent_mode 的注释。
+
+    形状和 gateway_server.save_channel_config 保持一致（updated_at + channels）。
+    先写临时文件再 replace：直接覆盖的话，写一半崩掉会留下半截 JSON，而读的一方
+    （_read_json）遇到坏文件是**当作没有配置**处理的 —— 症状就是通道悄悄关了。
+    """
+    path = os.path.join(instance_dir, "channel_directory.json")
+    cfg: dict = {}
+    if os.path.isfile(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                cfg = loaded
+        except Exception:
+            cfg = {}  # 坏文件按"没有"处理，下面整份重写
+    channels = cfg.get("channels")
+    if not isinstance(channels, dict):
+        channels = {}
+    feishu = channels.get("feishu")
+    if not isinstance(feishu, dict):
+        feishu = {}
+    feishu["enabled"] = bool(feishu_enabled)
+    channels["feishu"] = feishu
+    cfg["channels"] = channels
+    cfg["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    os.makedirs(instance_dir, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+    return path
 
 
 def run_setup_wizard() -> bool:
@@ -207,11 +248,13 @@ def run_setup_wizard() -> bool:
         feishu_app_id = _prompt("  FEISHU_APP_ID", "", secret=True)
         feishu_app_secret = ""
         feishu_bot_name = ""
-        agent_mode = "cli"
         if feishu_app_id:
             feishu_app_secret = _prompt("  FEISHU_APP_SECRET", "", secret=True)
             feishu_bot_name = _prompt("  FEISHU_BOT_NAME", inst_name)
-            agent_mode = "feishu"
+        # 填了 app_id 就是"这个实例是飞书机器人" —— 开关写进 channel_directory.json，
+        # **不写 .env**。写 .env 是旧做法：网关孵 worker 时传的 AGENT_MODE 会被
+        # .env 顶掉，于是 worker 起来跑 CLI、秒退、再被体检孵一遍，无限循环。
+        channel_path = _write_channel_config(instance_dir, feishu_enabled=bool(feishu_app_id))
 
         # 写入实例 .env（所有键都写，留空继承全局）
         _write_env("LLM_API_KEY", inst_api_key, instance_dir=instance_dir)
@@ -228,13 +271,16 @@ def run_setup_wizard() -> bool:
         _write_env("FEISHU_BOT_OPEN_ID", "", instance_dir=instance_dir)
         _write_env("LARK_CLI_PROFILE", "", instance_dir=instance_dir)
         _write_env("FEISHU_VERBOSE", "", instance_dir=instance_dir)
-        _write_env("AGENT_MODE", agent_mode, instance_dir=instance_dir)
         _write_env("AGENT_BASE_URL", "", instance_dir=instance_dir)
         _write_env("AGENT_PROMPTS_DIR", "", instance_dir=instance_dir)
         _write_env("NO_PROXY", "*", instance_dir=instance_dir)
 
         inst_env = os.path.join(instance_dir, ".env")
         print(f"  [OK] 实例 {inst_name} 已创建，配置保存到 {inst_env}")
+        print(f"       通道开关: {channel_path}")
+        if feishu_app_id:
+            print("       飞书通道已启用；要在这个实例上跑交互终端，用 "
+                  f"AGENT_MODE=cli nanoghost -I {inst_name} 覆盖一次")
         print()
 
         if _prompt("是否再创建一个实例？(y/N)", "N").lower() not in ("y", "yes"):
@@ -245,8 +291,9 @@ def run_setup_wizard() -> bool:
     print("  配置完成！")
     print()
     print("  启动方式：")
-    print("    nanoghost -I <实例名>       # CLI 交互模式")
-    print("    nanoghost gateway start -I <实例名>  # 启动守护进程")
+    print("    nanoghost gateway start -I <实例名>  # 启动守护进程（已启用的通道在里面）")
+    print("    nanoghost -I <实例名>       # 直接跑这个实例（开着飞书就是飞书机器人）")
+    print("    AGENT_MODE=cli nanoghost -I <实例名>  # 强制一次 CLI 交互终端")
     print("=" * 60)
     print()
 

@@ -10,7 +10,9 @@ ENV_CATEGORIES = {
     u"飞书通道": ["FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_BOT_NAME",
                  "FEISHU_BOT_OPEN_ID", "FEISHU_VERBOSE", "LARK_CLI_PROFILE",
                  "FEISHU_ENABLED"],
-    "Agent": ["AGENT_MODE", "AGENT_BASE_URL", "AGENT_DB_PATH"],
+    # AGENT_MODE 不在列表里：它还被 run.py 读（作为"调用方显式指定"），但**不能**
+    # 写进 .env —— 见 EXCLUDE 里的说明
+    "Agent": ["AGENT_BASE_URL", "AGENT_DB_PATH"],
     u"实例隔离": ["INSTANCE_DIR", "AGENT_NAMESPACE", "AGENT_WORKDIR", "AGENT_PROMPTS_DIR"],
     u"技能/MCP": ["AGENTS_SKILLS_DIR", "NANOGHOST_GLOBAL_CONFIG",
                   "NANOGHOST_INSTANCES_ROOT", "NANOGHOST_RUNPY"],
@@ -23,7 +25,6 @@ ENV_CATEGORIES = {
 
 DEFAULTS = {
     "LLM_SUPPORTS_VISION": "false",
-    "AGENT_MODE": "cli",
     "AGENT_BASE_URL": "http://127.0.0.1:8000",
     "NO_PROXY": "*",
     "FEISHU_VERBOSE": "false",
@@ -33,13 +34,22 @@ DEFAULTS = {
 EXCLUDE = {
     "SSL_CERT_FILE", "NANOGHOST_CALLER", "MCP_REFRESH_INTERVAL",
     "PYTHONUNBUFFERED", "INSTANCE_DIR",
+    # 这两个是**代码往里写**的，写进 .env 只会把人带偏：
+    #   AGENT_MODE   —— 代码读它，但只把"调用方显式指定的值"当数（网关孵 worker
+    #                   时传）。实例 .env 里配了会被忽略，唯一开关是
+    #                   channel_directory.json。见 src/agent_core/config.py。
+    #   AGENT_MODE_SOURCE —— 诊断用，记录上一条的值是哪来的。
+    "AGENT_MODE", "AGENT_MODE_SOURCE",
 }
 
 CATEGORY_COMMENTS = {
     "LLM": u"LLM 大模型配置（必需）",
     "Embedding": u"Embedding 配置（留空使用内置模型）",
-    u"飞书通道": u"飞书通道配置（AGENT_MODE=feishu 时必需）",
-    "Agent": u"Agent 运行模式与后端",
+    u"飞书通道": u"飞书通道配置\n"
+              u"填好 APP_ID / APP_SECRET 之后，还要在实例的 channel_directory.json 里\n"
+              u"把 feishu 打开（\"channels\": {\"feishu\": {\"enabled\": true}}）。\n"
+              u"通道的唯一开关在那里，本文件不再决定跑不跑飞书。",
+    "Agent": u"Agent 后端",
     u"实例隔离": u"多实例隔离配置",
     u"技能/MCP": u"技能 / MCP 配置",
     u"更新": u"升级流程开关（更新源配在 ~/.nanoghost/update.json）",
@@ -90,7 +100,8 @@ def generate(vars_found: set[str], output_path: str) -> str:
         comment = CATEGORY_COMMENTS.get(cat, cat)
         lines.append("")
         lines.append(f"# =============================================================================")
-        lines.append(f"# {comment}")
+        for cl in str(comment).split("\n"):
+            lines.append(f"# {cl}".rstrip())
         lines.append(f"# =============================================================================")
         for k in sorted(keys):
             default = DEFAULTS.get(k, "")

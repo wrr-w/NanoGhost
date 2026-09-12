@@ -413,7 +413,9 @@ def _cmd_instance_show(args) -> int:
 
     # env check
     env_info: dict = {}
-    for k in ("FEISHU_APP_ID", "FEISHU_APP_SECRET", "AGENT_MODE", "NO_PROXY"):
+    # AGENT_MODE_SOURCE 是配套的：模式只有经过 run.py 的 bootstrap 才有值，看到
+    # 它是空的就说明这个进程没走 bootstrap（模式可能是别处塞进来的）
+    for k in ("FEISHU_APP_ID", "FEISHU_APP_SECRET", "AGENT_MODE", "AGENT_MODE_SOURCE", "NO_PROXY"):
         v = os.environ.get(k, "")
         if k == "FEISHU_APP_SECRET":
             env_info[k] = "***set***" if v else "(not set)"
@@ -964,7 +966,10 @@ def _run_agent_mode() -> None:
         llm = OpenAILLM()
         image_port = SqliteImagePort(db)
         namespace = os.getenv("AGENT_NAMESPACE", "").strip() or "feishu-agent"
-        agent = Agent(db=db, llm=llm, image_port=image_port, namespace=namespace)
+        # 技能是实例级的，这条入口也得把实例技能目录带上（和 run.py 的 run_feishu 一致）
+        from agent_core.skill.discovery import resolve_instance_skill_dirs
+        agent = Agent(db=db, llm=llm, image_port=image_port, namespace=namespace,
+                      skill_extra_dirs=resolve_instance_skill_dirs() or None)
         sys_prompt = assemble_sys_prompt()
         logging.getLogger("agent_core").info("System prompt 长度: %s 字", len(sys_prompt))
         from agent_core.channel.feishu import FeishuWSClient

@@ -280,6 +280,63 @@ def _should_rescan(base: str) -> bool:
     return mt > cached_mt
 
 
+def resolve_instance_skill_dirs(instance_dir: Optional[str] = None) -> List[str]:
+    """实例自己的技能目录列表（给 discover(extra_dirs=...) 用）。
+
+    技能是**实例级**的东西（和 prompts、memory.md、MCP 白名单一样），所以每个入口
+    都要把这份带上 —— 少带一处，那个入口就只看得见全局 ~/.agents/skills，实例里放的
+    技能对它凭空消失。
+
+    规则（来自实例 config.yaml 的 skills 段）：
+        skills.dirs       给全了，就只扫这些
+        skills.extra_dirs 向后兼容的写法，追加在这些之外
+        都没有            兜底 <实例>/skills
+    """
+    inst = (instance_dir or os.environ.get("INSTANCE_DIR") or "").strip()
+    if not inst:
+        return []
+    inst = os.path.abspath(os.path.expanduser(inst))
+
+    from agent_core.utils.yaml_subset import load_yaml_subset
+
+    cfg = load_yaml_subset(os.path.join(inst, "config.yaml"))
+    skills_cfg = cfg.get("skills") if isinstance(cfg, dict) else None
+    if not isinstance(skills_cfg, dict):
+        skills_cfg = {}
+
+    def _expand(raw: Any) -> str:
+        p = str(raw).strip()
+        if p.startswith("./") or p.startswith(".\\"):
+            return os.path.join(inst, p[2:])
+        if p == ".":
+            return inst
+        return os.path.expanduser(p) if p else ""
+
+    def _existing(raw_dirs: Any) -> List[str]:
+        if not isinstance(raw_dirs, list):
+            return []
+        out = []
+        for d in raw_dirs:
+            p = _expand(d)
+            if p and os.path.isdir(p) and p not in out:
+                out.append(p)
+        return out
+
+    dirs = _existing(skills_cfg.get("dirs"))
+    if dirs:
+        # 配了 dirs 就以它为准。顺手把 AGENTS_SKILLS_DIR 撤掉，免得 discovery 又去
+        # 扫一遍全局目录 —— 历史行为，保持原样。
+        os.environ.pop("AGENTS_SKILLS_DIR", None)
+        return dirs
+
+    extra = _existing(skills_cfg.get("extra_dirs"))
+    if extra:
+        return extra
+
+    inst_skills = os.path.join(inst, "skills")
+    return [inst_skills] if os.path.isdir(inst_skills) else []
+
+
 def discover_skills(extra_dirs: Optional[List[str]] = None, force: bool = False) -> List[SkillDefinition]:
     """从 ~/.agents/skills 发现所有 SKILL.md 技能（支持递归分组结构）。
 
@@ -303,14 +360,10 @@ def discover_skills(extra_dirs: Optional[List[str]] = None, force: bool = False)
     search_paths: List[str] = []
     seen_paths: set[str] = set()
 
-    # 1. ~/.agents/skills
-    if os.path.isdir(AGENTS_SKILLS_DIR):
-        norm = os.path.normpath(os.path.realpath(AGENTS_SKILLS_DIR))
-        if norm not in seen_paths:
-            seen_paths.add(norm)
-            search_paths.append(AGENTS_SKILLS_DIR)
-
-    # 2. 额外目录
+    # 顺序 = 优先级，先扫到的赢（下面按 loaded_names 去重）。**实例目录排在前面**：
+    # 实例里放一个同名技能就是为了覆盖全局那份，本地盖全局。
+    #
+    # 1. 额外目录（实例自己的 skills/、config.yaml 里配的 dirs/extra_dirs）
     if extra_dirs:
         for d in extra_dirs:
             p = os.path.expanduser(d)
@@ -318,6 +371,13 @@ def discover_skills(extra_dirs: Optional[List[str]] = None, force: bool = False)
             if os.path.isdir(p) and norm not in seen_paths:
                 seen_paths.add(norm)
                 search_paths.append(p)
+
+    # 2. ~/.agents/skills（机器级共用，垫底）
+    if os.path.isdir(AGENTS_SKILLS_DIR):
+        norm = os.path.normpath(os.path.realpath(AGENTS_SKILLS_DIR))
+        if norm not in seen_paths:
+            seen_paths.add(norm)
+            search_paths.append(AGENTS_SKILLS_DIR)
 
     results: List[SkillDefinition] = []
     loaded_names: set[str] = set()

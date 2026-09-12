@@ -31,6 +31,56 @@ def _read_json(path: Path) -> Dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+# ── 运行模式 ──
+#
+# AGENT_MODE 决定这个进程跑成什么（cli 交互 / feishu 长连接）。它必须是**单一
+# 真相**：网关孵 worker、控制台启停通道、手工 `NanoGhost.exe -I cc`，看到的都得
+# 是同一个答案。答案在实例的 channel_directory.json 里（网关也只读它）。
+#
+# 历史写法是把它写进实例 .env。那是错的，而且错得很安静：run.py 加载 .env 用的是
+# load_dotenv(override=True)，.env 里的值会把网关传进来的 AGENT_MODE **顶掉** ——
+# 于是控制台里"启用飞书"点成功了、worker 起来却在跑 CLI，几秒钟就退出，30 秒后
+# 体检再孵一遍，无限循环。所以 .env 里的 AGENT_MODE 现在被忽略。
+
+AGENT_MODE_CLI = "cli"
+AGENT_MODE_FEISHU = "feishu"
+
+# 唯一有 worker 的通道。和 gateway_server.py 的 CHANNEL_REGISTRY 里带 worker_key
+# 的那几项是同一件事 —— 那边是网关侧的定义，这份是"从文件反推模式"用的，将来
+# 加第二个 worker 通道时要一起改。
+WORKER_CHANNEL = AGENT_MODE_FEISHU
+
+
+def channel_enabled(instance_dir: "str | os.PathLike | None", channel: str) -> bool:
+    """实例的 channel_directory.json 里某个通道是否启用。读不出来 = 没启用。"""
+    inst = str(instance_dir or "").strip()
+    if not inst:
+        return False
+    path = Path(os.path.abspath(os.path.expanduser(inst))) / "channel_directory.json"
+    channels = _read_json(path).get("channels")
+    if not isinstance(channels, dict):
+        return False
+    cfg = channels.get(channel)
+    return bool(cfg.get("enabled")) if isinstance(cfg, dict) else False
+
+
+def resolve_agent_mode(instance_dir: "str | os.PathLike | None",
+                       *, explicit: str = "") -> "tuple[str, str]":
+    """返回 (模式, 来源)。来源用于诊断输出：env / channel / default。
+
+    explicit 是**调用方显式指定的**模式（网关孵 worker 时传 AGENT_MODE=feishu）。
+    它优先，因为"我是哪一个 worker"只有孵它的那个人知道 —— 光看 channel_directory
+    .json 只能得出"飞书开着"，分不出这个进程是该当飞书 worker 还是该当网关。
+    传进来的 explicit 会盖过 .env，但 .env 本身不再参与判断。
+    """
+    m = _clean_env_value(explicit).lower()
+    if m:
+        return m, "env"
+    if channel_enabled(instance_dir, WORKER_CHANNEL):
+        return WORKER_CHANNEL, "channel"
+    return AGENT_MODE_CLI, "default"
+
+
 # ── 单次对话配置 ──
 
 @dataclass
