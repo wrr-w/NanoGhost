@@ -20,6 +20,11 @@
   （安装向导里可以切成全机器安装，那时走 `%ProgramFiles%`）
 - **目标机不需要 Python** —— 安装包就是 PyInstaller onedir 产物，装完即可用
 - 安装包**不含源码**
+- **安装程序会把安装目录写进 PATH**（按用户装 → `HKCU\Environment`；全机器装 →
+  `HKLM\...\Session Manager\Environment`），并广播 `WM_SETTINGCHANGE`，所以装完
+  不用重登录就能在任意目录敲 `NanoGhost.exe`。卸载时只删自己加的那一段 —— 你原本
+  就把这个目录放在 PATH 里的话，它不动。不去卸载，只想手工删：把那条路径从 PATH 里
+  去掉即可，没有别的地方需要清理。
 
 ### 首次运行
 

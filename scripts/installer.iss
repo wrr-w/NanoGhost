@@ -59,7 +59,134 @@ Source: "update.default.json"; DestDir: "{%USERPROFILE}\.nanoghost"; DestName: "
 ;   1. 不建快捷方式（[Icons] / [Tasks]）—— 手动点是废的，且会起一个管理器不知道的野进程
 ;   2. 不自动启动（[Run]）—— 同上
 ;   3. 不删用户数据（[UninstallDelete]）—— 见下方说明
-; 保留的只有: 程序文件 + 卸载项。
+; 保留的只有: 程序文件 + 卸载项 + 下面那条 PATH 条目。
+
+[Registry]
+; 把安装目录加进 PATH —— 安装程序自己写，不留给人手动加。
+; 文档里那些 `NanoGhost.exe -I <实例名>` / `NanoGhost.exe gateway start` 都是当成
+; 命令直接敲的，没有这一步就只有 cd 到安装目录才敲得出来。
+;
+; 按用户安装（默认，不弹 UAC）写 HKCU；在安装界面切成全机器安装时写 HKLM 的机器级
+; PATH。两条用同一个 NeedsAddPath 判定，重复安装不会把同一条路径叠第二遍。
+Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; \
+    ValueData: "{olddata};{app}"; \
+    Check: NeedsAddPath(ExpandConstant('{app}')) and (not IsAdminInstallMode); \
+    Flags: preservestringtype
+Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; \
+    ValueType: expandsz; ValueName: "Path"; \
+    ValueData: "{olddata};{app}"; \
+    Check: NeedsAddPath(ExpandConstant('{app}')) and IsAdminInstallMode; \
+    Flags: preservestringtype
+; 记一笔"这条 PATH 是安装程序加的"。卸载时凭它决定删不删 —— 用户本来就把这个目录
+; 放在 PATH 里的话（比如同时有源码仓库），我们没加过，也就不该替人删掉。
+Root: HKCU; Subkey: "Software\NanoGhost"; ValueType: dword; \
+    ValueName: "PathEntryAdded"; ValueData: "1"; \
+    Check: NeedsAddPath(ExpandConstant('{app}')) and (not IsAdminInstallMode)
+Root: HKLM; Subkey: "Software\NanoGhost"; ValueType: dword; \
+    ValueName: "PathEntryAdded"; ValueData: "1"; \
+    Check: NeedsAddPath(ExpandConstant('{app}')) and IsAdminInstallMode
+
+[Code]
+const
+  WM_SETTINGCHANGE = $001A;
+  SMTO_ABORTIFHUNG = $0002;
+
+function SendMessageTimeout(hWnd: Integer; Msg: Integer; wParam: Integer;
+  lParam: String; fuFlags: Integer; uTimeout: Integer;
+  var lpdwResult: Integer): Integer;
+  external 'SendMessageTimeoutW@user32.dll stdcall';
+
+function EnvRoot: Integer;
+begin
+  if IsAdminInstallMode then
+    Result := HKEY_LOCAL_MACHINE
+  else
+    Result := HKEY_CURRENT_USER;
+end;
+
+function EnvSubkey: String;
+begin
+  if IsAdminInstallMode then
+    Result := 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment'
+  else
+    Result := 'Environment';
+end;
+
+function NeedsAddPath(Param: String): Boolean;
+var
+  OrigPath: String;
+begin
+  Result := True;
+  if RegQueryStringValue(EnvRoot, EnvSubkey, 'Path', OrigPath) then
+    Result := Pos(';' + Uppercase(Param) + ';',
+                  ';' + Uppercase(OrigPath) + ';') = 0;
+end;
+
+procedure BroadcastEnvChange;
+var
+  Res: Integer;
+begin
+  // 光写注册表是不够的：Explorer 把环境块缓存住了，已经在跑的进程和新开的 cmd
+  // 都看不到新 PATH，要等重新登录。广播一次 WM_SETTINGCHANGE 才会立刻生效。
+  SendMessageTimeout(HWND_BROADCAST, WM_SETTINGCHANGE, 0, 'Environment',
+                     SMTO_ABORTIFHUNG, 3000, Res);
+end;
+
+procedure RemoveFromPath(const Dir: String);
+var
+  OrigPath, NewPath, Part: String;
+  P: Integer;
+begin
+  if not RegQueryStringValue(EnvRoot, EnvSubkey, 'Path', OrigPath) then
+    exit;
+  // 只把等于 Dir 的那些段丢掉，其余（包括顺序）原样拼回去 —— 别的软件的 PATH
+  // 条目不该被这次卸载碰一下。
+  NewPath := '';
+  while OrigPath <> '' do
+  begin
+    P := Pos(';', OrigPath);
+    if P = 0 then
+    begin
+      Part := OrigPath;
+      OrigPath := '';
+    end
+    else
+    begin
+      Part := Copy(OrigPath, 1, P - 1);
+      OrigPath := Copy(OrigPath, P + 1, Length(OrigPath));
+    end;
+    if (Part <> '') and (CompareText(Part, Dir) <> 0) then
+    begin
+      if NewPath <> '' then
+        NewPath := NewPath + ';';
+      NewPath := NewPath + Part;
+    end;
+  end;
+  RegWriteExpandStringValue(EnvRoot, EnvSubkey, 'Path', NewPath);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    BroadcastEnvChange;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  Added: Cardinal;
+begin
+  if CurUninstallStep <> usUninstall then
+    exit;
+  // 只有当初确实是安装程序加进去的那一段才删；用户本来就有的话不动它。
+  if not RegQueryDWordValue(EnvRoot, 'Software\NanoGhost',
+                            'PathEntryAdded', Added) then
+    exit;
+  if Added <> 1 then
+    exit;
+  RemoveFromPath(ExpandConstant('{app}'));
+  RegDeleteValue(EnvRoot, 'Software\NanoGhost', 'PathEntryAdded');
+  BroadcastEnvChange;
+end;
 
 ; ── 部署注意事项 ──────────────────────────────────────────────
 ; 1. 用户数据在 %USERPROFILE%\.nanoghost（实例、记忆、会话库、密钥），不在安装目录内，
@@ -70,7 +197,11 @@ Source: "update.default.json"; DestDir: "{%USERPROFILE}\.nanoghost"; DestName: "
 ;    升级前的正确做法：让外部管理器先停掉进程，装完再拉起。
 ;    程序内的 `NanoGhost.exe update` 同理——它最多等 60 秒进程退出，同样会被抢跑。
 ;
-; 3. 部署后由外部管理器调起的命令行参考（实例名以实际为准）：
+; 3. **这个安装包会改 PATH**（见上面 [Registry] 与 [Code]）。外部管理器用绝对路径启动
+;    NanoGhost，不受影响；改 PATH 只是为了让人在任意目录敲得出 `NanoGhost.exe`。
+;    装完不需要重登录 —— 安装程序会广播 WM_SETTINGCHANGE。卸载时只删自己加的那一段。
+;
+; 4. 部署后由外部管理器调起的命令行参考（实例名以实际为准）：
 ;      NanoGhost.exe -I <实例名>                    CLI 交互模式
 ;      NanoGhost.exe gateway start -I <实例名>      守护进程（飞书 bot）
 ;    实例由首次运行的配置向导创建，落在 %USERPROFILE%\.nanoghost\instances\<实例名>\
