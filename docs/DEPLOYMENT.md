@@ -113,9 +113,14 @@ echo 1.1.0 > VERSION
 REM 2. 构建（PyInstaller + Inno Setup 安装包一起做）
 scripts\build_installer.bat rebuild
 
-REM 3. 打升级包并发布到 GitHub Releases
+REM 3. 打升级包 + 安装包，一起发布到 GitHub Releases
 venv\Scripts\python.exe scripts\make_release.py --publish
 ```
+
+第 3 步**一次发两个资产**：`NanoGhost-v<版本>-win64.zip`（已装的机器升级）和
+`NanoGhostSetup-<版本>.exe`（第一次装）。缺安装包会直接报错 —— 它在
+`dist\installer\` 里，名字带版本号，所以"改了 VERSION 但没重新编"会立刻暴露。
+确实要只发 zip，加 `--skip-installer`（会打印警告）。
 
 只想打包不想发：
 
@@ -123,15 +128,18 @@ venv\Scripts\python.exe scripts\make_release.py --publish
 venv\Scripts\python.exe scripts\make_release.py
 ```
 
-它会打出可以直接粘贴的 `gh release create` 命令，你先看看包里有什么再决定。
+它会打出可以直接粘贴的 `gh release create` 命令（两个资产都带上），
+你先看看包里有什么再决定。
 
-`make_release.py` 不是简单压缩，它做四件事，每件都是踩过的坑：
+`make_release.py` 不是简单压缩，它做五件事，每件都是踩过的坑：
 
 1. **内容放在 zip 根目录**（不套一层 `NanoGhost/`）—— 套了的话升级完程序会
    变成 `<安装目录>\NanoGhost\NanoGhost.exe`，看起来像"升级把程序升没了"
 2. **校验包里的 `VERSION` 和源码一致** —— 防上面说的无限升级
 3. **拒绝 `.env` / `*.pem` / `*.key` 进包** —— 升级包是公开下载的，`.env` 里有密钥
 4. **确认 `NanoGhost.exe` 在 zip 根目录** —— 防打包结构错
+5. **安装包必须一起发**，且检查它有 `MZ` 头 —— 以前靠人记得手工 `gh release
+   upload`，v1.0.0 就是这么缺的，而缺的恰好是最需要它的场景
 
 ### 发布前检查清单
 
@@ -140,7 +148,10 @@ venv\Scripts\python.exe scripts\make_release.py
 - [ ] `make_release.py` 没报错（报了就先修，别绕过）
 - [ ] release 里的 zip 名字是 `NanoGhost-v<版本>-win64.zip`
       —— 客户端按 `nanoghost` 前缀挑，别改成别的名字
-- [ ] release 里**没有**多余的手传 `.zip`（选包逻辑会先挑前缀匹配的，但别考验它）
+- [ ] release 里的安装包名字是 `NanoGhostSetup-<版本>.exe`
+      —— 控制台按 `nanoghostsetup` 前缀挑，两者不能混
+- [ ] release 里**没有**多余的手传 `.zip` / `.exe`（选包逻辑会先挑前缀匹配的，
+      但别考验它；安装包还刻意不做"挑不到就退回第一个 exe"的兜底）
 
 ### 发布后验证
 

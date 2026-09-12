@@ -218,14 +218,21 @@ echo 1.1.0 > VERSION
 REM 2. 重新构建（含安装包）
 scripts\build_installer.bat rebuild
 
-REM 3. 打升级包并发布
+REM 3. 打升级包 + 安装包，一起发布
 python scripts\make_release.py --publish
 ```
 
-只打包不发布：`python scripts\make_release.py`，它会打印出可以直接粘贴的
-`gh release create` 命令。
+第 3 步一次发**两个**资产：`NanoGhost-v<版本>-win64.zip`（升级）和
+`NanoGhostSetup-<版本>.exe`（首装）。缺安装包直接报错，它会告诉你先跑
+`build_installer.bat rebuild`；确实要只发 zip 加 `--skip-installer`。
 
-`make_release.py` 会做三件事，每件都是踩过的坑：
+> 以前只发 zip，安装包靠人记得手工 `gh release upload` —— v1.0.0 就是这么缺的，
+> 而缺的恰好是最需要它的场景：旧版升不动、只能靠安装包重装的机器。
+
+只打包不发布：`python scripts\make_release.py`，它会打印出可以直接粘贴的
+`gh release create` 命令（两个资产都带上）。
+
+`make_release.py` 会做四件事，每件都是踩过的坑：
 
 1. **把 `dist/NanoGhost/` 的内容放在 zip 根目录**，不套一层目录。套了的话覆盖出来
    会变成 `<安装目录>\NanoGhost\NanoGhost.exe`，程序在原来位置消失，看起来像
@@ -238,6 +245,10 @@ python scripts\make_release.py --publish
    静默失效（一个永远不运行的安全检查比没有更危险，因为它让人以为查过了），
    所以脚本现在两个路径都试，找不到就**报错退出**而不是跳过。
 3. **拒绝 `.env` / `*.pem` / `*.key` 进包**（见上文）。
+4. **安装包必须一起发**，并检查它有 `MZ` 头。编到一半中断会留下一个不是 PE 的
+   文件，而它是要被用户双击运行的 —— 发出去比不发更糟。控制台侧挑安装包时
+   **刻意不做**"挑不到就退回第一个 exe"的兜底（那会装上一个来路不明的可执行
+   文件），所以名字必须是 `NanoGhostSetup-<版本>.exe`。
 
 ### 关于 release 里的多个 `.zip`
 

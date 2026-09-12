@@ -17,6 +17,11 @@ r"""把 dist/NanoGhost/ 打成 GitHub Releases 用的升级包。
 
 3. **release 里只能有一个 .zip。** update.py 取 assets 里第一个 .zip，多放一个
    别的 zip（比如源码包）就可能下错东西。
+
+4. **安装包必须跟着一起传。** release 上那两样是给两种场景的：zip 给已经装好的
+   机器升级，exe 给第一次装。以前只在 --publish 时发了 zip，安装包靠人记得手工
+   `gh release upload` —— v1.0.0 就是这么缺的，而缺的恰好是最需要它的场景（旧版
+   升不动的机器只能靠安装包重装）。现在两个一起发，缺安装包直接报错。
 """
 import argparse
 import hashlib
@@ -99,6 +104,8 @@ def main() -> int:
     ap.add_argument("--publish", action="store_true",
                     help="打包后调用 gh release create 发布")
     ap.add_argument("--notes", default="", help="Release 说明")
+    ap.add_argument("--skip-installer", action="store_true",
+                    help="只发 zip，不发安装包（不推荐，见模块 docstring 第 4 条）")
     args = ap.parse_args()
 
     version = read_version()
@@ -141,6 +148,37 @@ def main() -> int:
     if "NanoGhost.exe" not in files:
         sys.exit("[ERROR] NanoGhost.exe 不在包根目录，包结构不对（多套了一层目录？）")
 
+    # 安装包：dist\installer\NanoGhostSetup-<version>.exe（installer.iss 的
+    # OutputBaseFilename 定的名字）。名字里带版本号，所以上一个版本的包不会被
+    # 误当成这次的 —— 改了 VERSION 没重新编，这里就会找不到。
+    inst_path = ""
+    if args.skip_installer:
+        print("[WARN] --skip-installer：这次只发 zip，release 里不会有安装包。")
+        print()
+    else:
+        inst_dir = os.path.join(ROOT, "dist", "installer")
+        inst_name = f"NanoGhostSetup-{version}.exe"
+        inst_path = os.path.join(inst_dir, inst_name)
+        if not os.path.isfile(inst_path):
+            have = sorted(
+                f for f in (os.listdir(inst_dir) if os.path.isdir(inst_dir) else [])
+                if f.lower().startswith("nanoghostsetup") and f.lower().endswith(".exe")
+            )
+            sys.exit(
+                f"[ERROR] 找不到安装包 {inst_path}\n"
+                f"        先跑 scripts\\build_installer.bat rebuild\n"
+                + (f"        dist\\installer 里现有: {', '.join(have)}\n" if have
+                   else "        dist\\installer 里一个安装包都没有\n")
+                + f"        确实要只发 zip 就加 --skip-installer（旧版升不动的机器"
+                  f"就没有退路了，除非你确定不需要）"
+            )
+        # 编到一半中断 / 下坏了会留下一个不是 PE 的文件；它会被用户双击运行，
+        # 发出去比不发更糟。
+        with open(inst_path, "rb") as f:
+            if f.read(2) != b"MZ":
+                sys.exit(f"[ERROR] {inst_path} 没有 MZ 头，不是 PE 可执行文件。\n"
+                         f"        像是编译中断或下载损坏的产物，别发出去。")
+
     outdir = os.path.join(ROOT, "dist", "release")
     os.makedirs(outdir, exist_ok=True)
     tag = f"v{version}"
@@ -160,9 +198,15 @@ def main() -> int:
 
     print(f"版本    : {version}")
     print(f"文件数  : {len(files)}")
-    print(f"输出    : {zip_path}")
-    print(f"大小    : {size:,} bytes ({size / 1024 / 1024:.1f} MB)")
-    print(f"SHA256  : {sha}")
+    print(f"升级包  : {zip_path}")
+    print(f"          {size:,} bytes ({size / 1024 / 1024:.1f} MB)")
+    print(f"          SHA256 {sha}")
+    if inst_path:
+        inst_size = os.path.getsize(inst_path)
+        print(f"安装包  : {inst_path}")
+        print(f"          {inst_size:,} bytes ({inst_size / 1024 / 1024:.1f} MB)")
+    else:
+        print("安装包  : （已跳过）")
     print()
     print("包里顶层（前 10 项）:")
     for rel in files[:10]:
@@ -170,21 +214,32 @@ def main() -> int:
     if len(files) > 10:
         print(f"  ... 共 {len(files)} 项")
 
+    # 两个资产一起 create。分两步（先 create 再 upload）会在中间留一个"只有 zip
+    # 的 release"，正好是这次要修的那个状态；客户端可能在那几秒里查到它。
+    assets = [zip_path] + ([inst_path] if inst_path else [])
+
     if args.publish:
         notes = args.notes or f"NanoGhost {tag}"
-        cmd = ["gh", "release", "create", tag, zip_path, "--title", tag, "--notes", notes]
+        cmd = ["gh", "release", "create", tag, *assets,
+               "--title", tag, "--notes", notes]
         print()
         print("发布:", " ".join(cmd))
         rc = subprocess.call(cmd, cwd=ROOT)
         if rc != 0:
             return rc
-        print(f"[OK] 已发布 {tag}")
+        print(f"[OK] 已发布 {tag}（{len(assets)} 个资产）")
+        if not inst_path:
+            print("[WARN] release 里没有安装包 —— 旧版升不动的机器没有退路。")
+            print("       补传: gh release upload "
+                  f"{tag} dist\\installer\\NanoGhostSetup-{version}.exe")
     else:
         print()
         print("下一步 —— 发布 Release（客户端优先挑名字以 'nanoghost' 开头的 .zip，")
-        print("挑不到才退回第一个 .zip；别往同一个 release 里再传别的 zip）:")
+        print("挑不到才退回第一个 .zip；别往同一个 release 里再传别的 zip。")
+        print("安装包由控制台按 'nanoghostsetup' 前缀挑，两者名字不能混）:")
         print()
-        print(f'  gh release create {tag} "{zip_path}" --title "{tag}" --notes "NanoGhost {tag}"')
+        quoted = " ".join(f'"{p}"' for p in assets)
+        print(f'  gh release create {tag} {quoted} --title "{tag}" --notes "NanoGhost {tag}"')
 
     return 0
 
