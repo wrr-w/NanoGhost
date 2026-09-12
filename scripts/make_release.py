@@ -110,13 +110,28 @@ def main() -> int:
                  f"        先跑 scripts\\build_installer.bat rebuild，或 pyinstaller build.spec -y")
 
     # 版本一致性检查：dist 里的 VERSION 必须和源码的一致，否则升级完
-    # 客户端读到的还是旧版本号，会反复提示"有新版本"。
-    bundled_version_file = os.path.join(src, "VERSION")
-    if os.path.isfile(bundled_version_file):
-        bundled = open(bundled_version_file, encoding="utf-8").read().strip()
-        if bundled != version:
-            sys.exit(f"[ERROR] 版本不一致: VERSION={version} 但 dist 里是 {bundled}\n"
-                     f"        重新构建一遍再打包。")
+    # 客户端读到的还是旧版本号，会反复提示"有新版本"、无限升级。
+    #
+    # PyInstaller 6.x 的 onedir 把 datas 放进 _internal/，所以 VERSION 在
+    # _internal/VERSION 而不是包根目录。第一版只找了根目录，文件不存在 →
+    # 整个检查被 if 静默跳过 —— 一个永远不执行的"安全检查"比没有还危险，
+    # 它会让人以为查过了。所以改成找不到就直接报错。
+    candidates = [
+        os.path.join(src, "_internal", "VERSION"),
+        os.path.join(src, "VERSION"),
+    ]
+    bundled_version_file = next((p for p in candidates if os.path.isfile(p)), None)
+    if bundled_version_file is None:
+        sys.exit("[ERROR] 在 dist 里找不到 VERSION，试过:\n"
+                 + "".join(f"        {p}\n" for p in candidates)
+                 + "        没有它就核对不了版本，先确认构建配置没被改过。")
+    bundled = open(bundled_version_file, encoding="utf-8").read().strip()
+    if bundled != version:
+        sys.exit(f"[ERROR] 版本不一致: 源码 VERSION={version}，"
+                 f"但包里是 {bundled}\n"
+                 f"        （取自 {bundled_version_file}）\n"
+                 f"        改了 VERSION 之后必须重新构建再打包，否则客户端装完\n"
+                 f"        读到的还是旧版本号，会一直提示有新版本。")
 
     files = collect_files(src)
     if not files:
@@ -166,8 +181,8 @@ def main() -> int:
         print(f"[OK] 已发布 {tag}")
     else:
         print()
-        print("下一步 —— 发布 Release（update.py 只会找 assets 里第一个 .zip，")
-        print("这个 release 里不要再放别的 zip）:")
+        print("下一步 —— 发布 Release（客户端优先挑名字以 'nanoghost' 开头的 .zip，")
+        print("挑不到才退回第一个 .zip；别往同一个 release 里再传别的 zip）:")
         print()
         print(f'  gh release create {tag} "{zip_path}" --title "{tag}" --notes "NanoGhost {tag}"')
 
