@@ -50,7 +50,10 @@ Source: "{#MyBuildDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
 ; 配置可见、可改。）
 ;   onlyifdoesntexist   升级安装时不覆盖用户改过的配置
 ;   uninsneveruninstall 属于用户数据，随 .nanoghost 一起保留
-Source: "update.default.json"; DestDir: "{userprofile}\.nanoghost"; DestName: "update.json"; Flags: onlyifdoesntexist uninsneveruninstall
+; 注意是 {%USERPROFILE} 不是 {userprofile} —— Inno Setup 没有 userprofile 这个
+; 常量，{%VAR} 才是"展开环境变量"的写法。写成 {userprofile} 会在编译期直接
+; 报 Unknown constant 而整个安装包编不出来。
+Source: "update.default.json"; DestDir: "{%USERPROFILE}\.nanoghost"; DestName: "update.json"; Flags: onlyifdoesntexist uninsneveruninstall
 
 ; 本机由外部项目负责启动和管理 NanoGhost，所以这里刻意不做三件事：
 ;   1. 不建快捷方式（[Icons] / [Tasks]）—— 手动点是废的，且会起一个管理器不知道的野进程
