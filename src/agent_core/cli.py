@@ -12,6 +12,9 @@ import requests
 from agent_core.mcp_client.config import global_config_path, load_global_registry, mask_headers, resolve_servers
 from agent_core.mcp_client.http_sse import MCPHttpSSEClient
 from agent_core.mcp_client.manifest_cache import load_manifest_cache
+from agent_core.setup_wizard import ensure_llm_configured, _env_path as _wizard_env_path, _write_env, _read_env
+from agent_core.update import check_for_updates, apply_update, auto_check_and_notify
+from agent_core.version import current_version, compare_versions
 from agent_core.utils import load_yaml_subset, pid_exists, terminate_pid
 
 
@@ -372,7 +375,7 @@ def _cmd_instance_create(args) -> int:
         repo = Path(__file__).resolve().parent.parent.parent
     for src in [repo / ".env.example", repo / "prompts" / "agent_profile.md", repo / "prompts" / "agent_rules_conduct.md"]:
         if src.is_file():
-            dst = inst / src.name
+            dst = inst / (".env" if src.name == ".env.example" else src.name)
             if not dst.exists():
                 dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
     print(json.dumps({"ok": True, "name": name, "path": str(inst)}, ensure_ascii=False))
@@ -392,7 +395,6 @@ def _cmd_instance_show(args) -> int:
     inst_env = inst / ".env"
     if inst_env.is_file():
         load_dotenv(inst_env, override=True)
-    load_dotenv(override=False)  # root .env as fallback
 
     out: dict = {"ok": True, "name": name, "path": str(inst)}
 
@@ -577,15 +579,169 @@ def _cmd_mcp_manifest(args) -> int:
 
 
 def _load_dotenv_frozen() -> None:
-    """Load .env from exe directory (frozen) or CWD (source)."""
+    """Load global .env from ~/.nanoghost/.env only."""
     from dotenv import load_dotenv
-    if getattr(sys, "frozen", False):
-        exe_dir = os.path.dirname(sys.executable)
-        env_path = os.path.join(exe_dir, ".env")
-        if os.path.isfile(env_path):
-            load_dotenv(dotenv_path=env_path)
-            return
-    load_dotenv()
+    global_env = os.path.join(os.path.expanduser("~"), ".nanoghost", ".env")
+    if os.path.isfile(global_env):
+        load_dotenv(dotenv_path=global_env, override=False)
+    _normalize_llm_env()
+
+
+def _normalize_llm_env() -> None:
+    """兼容 OpenObstrator 的键名：OPENAI_API_KEY → LLM_API_KEY 等"""
+    _mapping = [
+        ("LLM_API_KEY", "OPENAI_API_KEY", "API_KEY"),
+        ("LLM_BASE_URL", "OPENAI_BASE_URL", "BASE_URL"),
+        ("LLM_MODEL", "OPENAI_MODEL", "MODEL_NAME"),
+    ]
+    for primary, *fallbacks in _mapping:
+        if not (os.getenv(primary) or "").strip():
+            for fb in fallbacks:
+                v = (os.getenv(fb) or "").strip()
+                if v:
+                    os.environ[primary] = v
+                    break
+
+
+def _resolve_instance_arg(instance_dir_arg: str | None) -> str | None:
+    if not instance_dir_arg:
+        return None
+    inst = instance_dir_arg.strip()
+    p = Path(os.path.expanduser(inst))
+    if p.is_absolute() or any(x in inst for x in ("/", "\\", ":")):
+        return os.path.abspath(str(p))
+    return str((_instances_root() / inst).resolve())
+
+
+def _cmd_config_set(args) -> int:
+    key = (args.key or "").strip().upper()
+    value = (args.value or "").strip()
+    if not key:
+        print(json.dumps({"ok": False, "error": "key is required"}, ensure_ascii=False))
+        return 1
+    inst_dir = _resolve_instance_arg(getattr(args, "instance_dir", None))
+    _write_env(key, value, instance_dir=inst_dir)
+    os.environ[key] = value
+    path = _wizard_env_path(inst_dir)
+    print(json.dumps({"ok": True, "key": key, "value": value, "path": path}, ensure_ascii=False))
+    return 0
+
+
+def _cmd_config_get(args) -> int:
+    key = (args.key or "").strip().upper()
+    if not key:
+        print(json.dumps({"ok": False, "error": "key is required"}, ensure_ascii=False))
+        return 1
+    inst_dir = _resolve_instance_arg(getattr(args, "instance_dir", None))
+    val = _read_env(key, instance_dir=inst_dir) or os.getenv(key, "")
+    print(json.dumps({"ok": True, "key": key, "value": val}, ensure_ascii=False))
+    return 0
+
+
+def _cmd_config_list(args) -> int:
+    inst_dir = _resolve_instance_arg(getattr(args, "instance_dir", None))
+    path = _wizard_env_path(inst_dir)
+    _secret_keys = {"LLM_API_KEY", "FEISHU_APP_SECRET", "EMBED_API_KEY", "FEISHU_APP_ID"}
+    items: dict = {}
+    if os.path.isfile(path):
+        for line in open(path, encoding="utf-8"):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k:
+                    if k in _secret_keys and v:
+                        v = v[:4] + "***" + v[-4:] if len(v) > 8 else "***"
+                    items[k] = v
+    print(json.dumps({"ok": True, "path": path, "env": items}, ensure_ascii=False, indent=2))
+    return 0
+
+
+# update 子命令的退出码约定（外部管理器依赖这三个值分支，不要随意改动）
+UPDATE_EXIT_OK = 0          # 已是最新，无需更新
+UPDATE_EXIT_AVAILABLE = 10  # 有新版本：--check 时表示"可用"；不带 --check 时表示"覆盖脚本已启动"
+UPDATE_EXIT_ERROR = 1       # 失败（网络 / 未配置 repo / 下载或启动失败）
+
+
+def _cmd_update(args) -> int:
+    """检查/执行升级。
+
+    脚本化调用约定（见 docs/UPDATING.md）：
+
+        nanoghost update --check --json
+            0  = 已是最新        10 = 有新版本        1 = 检查失败
+
+        nanoghost update --yes --no-restart --json
+            0  = 已是最新，什么都没做
+            10 = 下载完成、覆盖脚本已在后台启动（**覆盖尚未发生**）
+            1  = 失败，已下载的包会保留
+
+    注意 exit 10 不代表覆盖已成功：覆盖在本进程退出之后才执行。调用方需要轮询
+    result_file（默认 %TEMP%\\nanoghost_update_result.txt）：
+        "OK"              成功
+        "FAIL:timeout"    程序没能在 60 秒内退出
+        "FAIL:expand"     安装包解压失败
+        "FAIL:copy"       覆盖安装目录失败（exe 被占用）
+    """
+    from agent_core.update import check_for_updates, apply_update, update_result_path
+    from agent_core.version import current_version
+
+    as_json = bool(getattr(args, "json", False))
+    check_only = bool(getattr(args, "check", False))
+    non_interactive = bool(getattr(args, "yes", False)) or not sys.stdin.isatty()
+    restart = not bool(getattr(args, "no_restart", False))
+
+    def emit(payload: dict, human: str = "") -> None:
+        if as_json:
+            print(json.dumps(payload, ensure_ascii=False))
+        elif human:
+            print(human)
+
+    local = current_version()
+    has_update, remote, url_or_err = check_for_updates()
+
+    # check_for_updates 失败时 remote 为空；"已是最新"时 remote 有值
+    if not has_update and not remote:
+        emit({"ok": False, "error": url_or_err, "current_version": local}, url_or_err)
+        return UPDATE_EXIT_ERROR
+
+    if not has_update:
+        emit(
+            {"ok": True, "update_available": False,
+             "current_version": local, "latest_version": remote},
+            f"已是最新版本 v{local}",
+        )
+        return UPDATE_EXIT_OK
+
+    if check_only:
+        emit(
+            {"ok": True, "update_available": True,
+             "current_version": local, "latest_version": remote,
+             "download_url": url_or_err},
+            f"发现新版本 v{remote} (当前 v{local})",
+        )
+        return UPDATE_EXIT_AVAILABLE
+
+    ok, err = apply_update(url_or_err, interactive=not non_interactive, restart=restart)
+    if not ok:
+        emit({"ok": False, "error": err, "current_version": local}, f"升级失败: {err}")
+        return UPDATE_EXIT_ERROR
+
+    emit(
+        {"ok": True, "update_available": True, "applied": "started",
+         "current_version": local, "latest_version": remote,
+         "restart": restart, "result_file": update_result_path()},
+        f"v{remote} 覆盖脚本已启动，本进程退出后执行。结果见 {update_result_path()}",
+    )
+    return UPDATE_EXIT_AVAILABLE
+
+
+def _cmd_setup_wizard(_args) -> int:
+    from agent_core.setup_wizard import run_setup_wizard as _run_w
+    ok = _run_w()
+    print(json.dumps({"ok": ok}, ensure_ascii=False))
+    return 0 if ok else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -598,6 +754,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="127.0.0.1", help=argparse.SUPPRESS)
     parser.add_argument("--port", type=int, default=0, help=argparse.SUPPRESS)
     parser.add_argument("--instance-dir", "-I", default=None, help=argparse.SUPPRESS)
+    # 只读本地 VERSION 文件，不发网络请求 —— 外部管理器用它确认"升级是否真的
+    # 落地了"。用 update --check 也能拿到 current_version，但那要联网，机器离线时
+    # 就确认不了。
+    parser.add_argument("--version", "-V", action="store_true",
+                        help="print current version and exit")
     sub = parser.add_subparsers(dest="cmd")
 
     inst = sub.add_parser("instance", help="manage instance directories (create / list / resolve path)")
@@ -681,7 +842,35 @@ def main(argv: list[str] | None = None) -> int:
     p_manifest.add_argument("--instance-dir", "-I", default=None, help="instance directory (path or name)")
     p_manifest.set_defaults(func=_cmd_mcp_manifest)
 
+    cfg = sub.add_parser("config", help="manage .env configuration (set/get/list)")
+    cfg_sub = cfg.add_subparsers(dest="cfg_cmd")
+    cfg_set = cfg_sub.add_parser("set", help="set an env variable")
+    cfg_set.add_argument("key", help="variable name (e.g. LLM_API_KEY)")
+    cfg_set.add_argument("value", help="variable value")
+    cfg_set.add_argument("--instance-dir", "-I", default=None, help="target instance directory")
+    cfg_set.set_defaults(func=_cmd_config_set)
+    cfg_get = cfg_sub.add_parser("get", help="get an env variable value")
+    cfg_get.add_argument("key", help="variable name")
+    cfg_get.add_argument("--instance-dir", "-I", default=None, help="target instance directory")
+    cfg_get.set_defaults(func=_cmd_config_get)
+    cfg_list = cfg_sub.add_parser("list", help="list all .env entries")
+    cfg_list.add_argument("--instance-dir", "-I", default=None, help="target instance directory")
+    cfg_list.set_defaults(func=_cmd_config_list)
+
+    upd = sub.add_parser("update", help="检查并升级到最新版本 (GitHub Releases)")
+    upd.add_argument("--check", action="store_true", help="只检查是否有新版本，不下载")
+    upd.add_argument("--yes", "-y", action="store_true", help="非交互：不打印进度、失败不暂停（脚本/管理器调用）")
+    upd.add_argument("--no-restart", action="store_true", help="覆盖完成后不自动拉起程序，交给外部管理器")
+    upd.add_argument("--json", action="store_true", help="只输出 JSON，便于脚本解析")
+    upd.set_defaults(func=_cmd_update)
+
+    setup = sub.add_parser("setup", help="交互式配置向导（首次运行）")
+    setup.set_defaults(func=_cmd_setup_wizard)
+
     args = parser.parse_args(argv)
+    if getattr(args, "version", False):
+        print(current_version())
+        return 0
     if args.gateway:
         if not args.port or int(args.port) <= 0:
             parser.error("--port required with --gateway")
@@ -699,14 +888,33 @@ def main(argv: list[str] | None = None) -> int:
         if _inst_env.is_file():
             from dotenv import load_dotenv as _ld
             _ld(dotenv_path=str(_inst_env), override=True)
+            _normalize_llm_env()
         from gateway_server import serve_gateway
         serve_gateway(host=str(args.host), port=int(args.port), instance_dir=inst)
         return 0
     func = getattr(args, "func", None)
     if func is None:
-        # Agent worker fallthrough: when the frozen exe is called without a
-        # subcommand, run as an agent (feishu/CLI) based on AGENT_MODE env var.
-        # This is used by the gateway to spawn workers without a run.py path.
+        inst_raw = (args.instance_dir or "").strip()
+        if inst_raw:
+            p = Path(os.path.expanduser(inst_raw))
+            if p.is_absolute() or p.exists() or any(x in inst_raw for x in ("/", "\\", ":")):
+                inst = Path(os.path.abspath(str(p)))
+            else:
+                inst = (_instances_root() / inst_raw).resolve()
+            os.environ["INSTANCE_DIR"] = str(inst)
+        if not (os.getenv("LLM_API_KEY") or "").strip():
+            ensure_llm_configured()
+        if not (os.getenv("INSTANCE_DIR") or "").strip():
+            if os.getenv("LLM_API_KEY"):
+                print("配置已完成，请用 -I 指定实例启动：")
+                print()
+                print("  nanoghost -I <实例名>        # CLI 交互模式")
+                print("  nanoghost gateway start -I <实例名>  # 守护进程")
+                print()
+                print("或在 dist/NanoGhost 目录下创建快捷方式，目标设为：")
+                print("  NanoGhost.exe -I <实例名>")
+            return 0
+        auto_check_and_notify()
         _run_agent_mode()
         return 0
     return int(func(args) or 0)
@@ -737,13 +945,15 @@ def _run_agent_mode() -> None:
     from agent_core.adapters import SqliteDatabase, OpenAILLM, SqliteImagePort
     from run import assemble_sys_prompt, run_cli_chat
 
-    inst_dir = os.getenv("INSTANCE_DIR", "")
-    if inst_dir:
-        data_dir = os.path.join(inst_dir, "data")
-        os.makedirs(data_dir, exist_ok=True)
-        db_path = os.path.join(data_dir, "agent_data.db")
-    else:
-        db_path = ""
+    inst_dir = os.getenv("INSTANCE_DIR", "").strip()
+    if not inst_dir:
+        logging.getLogger("agent_core").error("未指定实例目录。请先创建实例后使用 -I 启动:\n"
+                                              "  nanoghost instance create <名称>\n"
+                                              "  nanoghost -I <实例名>")
+        return
+    data_dir = os.path.join(inst_dir, "data")
+    os.makedirs(data_dir, exist_ok=True)
+    db_path = os.path.join(data_dir, "agent_data.db")
 
     mode = os.getenv("AGENT_MODE", "cli").lower()
     if mode == "feishu":
@@ -771,4 +981,13 @@ def _run_agent_mode() -> None:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    _frozen = getattr(sys, "frozen", False)
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except SystemExit as e:
+        if _frozen and e.code != 0:
+            try:
+                input("\n按任意键退出...")
+            except Exception:
+                pass
+        raise

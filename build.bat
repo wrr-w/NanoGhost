@@ -7,6 +7,7 @@ echo ========================================
 cd /d "%~dp0"
 
 echo [1/3] Setting up virtual environment...
+python scripts/generate_env_template.py || exit /b 1
 if not exist "venv" (
     echo Creating virtual environment...
     python -m venv venv
@@ -28,10 +29,33 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo.
-echo [3/3] Building executable with PyInstaller...
-pyinstaller --clean build.spec
+echo [3/3] Selecting build mode...
 
+if /i "%1"=="fast" goto :fast
+if /i "%1"=="clean" goto :clean
+if /i "%1"=="help" goto :help
+
+:clean
+echo Building executable with PyInstaller (full clean)...
+pyinstaller --clean build.spec
+goto :done
+
+:fast
+echo Building executable with PyInstaller (incremental)...
+pyinstaller build.spec -y
+goto :done
+
+:help
+echo Usage: build.bat [fast^|clean^|help]
+echo   fast   - Incremental build (quick, reuses cache)
+echo   clean  - Full rebuild (slow, removes all cache)
+echo   help   - Show this help
+echo.
+echo Default: clean full rebuild
+pyinstaller --clean build.spec
+goto :done
+
+:done
 echo.
 echo ========================================
 echo Build Complete!
@@ -39,8 +63,8 @@ echo ========================================
 echo Executable: dist\NanoGhost.exe
 echo.
 echo Usage:
-echo   dist\NanoGhost.exe "hello"
-echo   dist\NanoGhost.exe --gateway -I instance_dir --port 8000
+echo   build.bat        - Full clean rebuild
+echo   build.bat fast   - Quick incremental build
 echo ========================================
 
 pause

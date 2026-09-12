@@ -2,7 +2,6 @@
 
 import os
 import sys
-import shutil
 
 SPEC_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
 SRC_DIR = os.path.join(SPEC_DIR, "src")
@@ -15,26 +14,6 @@ print(f"PROMPTS_DIR exists: {os.path.exists(PROMPTS_DIR)}")
 import certifi as _certifi_mod
 _CA_BUNDLE = _certifi_mod.where()
 
-# Collect all Python system DLLs (Windows Store Python doesn't expose them to PyInstaller)
-_PY_DLL_DIR = os.path.join(sys.base_prefix, "DLLs")
-_BINARIES = []
-if os.path.isdir(_PY_DLL_DIR):
-    for _f in os.listdir(_PY_DLL_DIR):
-        if _f.lower().endswith((".dll", ".pyd")):
-            _BINARIES.append((os.path.join(_PY_DLL_DIR, _f), "."))
-
-# Collect pycryptodome native modules (hook-Crypto.py sometimes misses them on Windows Store Python)
-import glob as _glob
-from PyInstaller.compat import EXTENSION_SUFFIXES as _EXT_SUFFIXES
-_CRYPTO_DIR = os.path.join(SPEC_DIR, "venv", "Lib", "site-packages", "Crypto")
-if os.path.isdir(_CRYPTO_DIR):
-    for _root, _dirs, _files in os.walk(_CRYPTO_DIR):
-        _rel = os.path.relpath(_root, _CRYPTO_DIR)
-        _target = "Crypto" + (os.sep + _rel if _rel != "." else "")
-        for _ext in _EXT_SUFFIXES:
-            for _f in _glob.glob(os.path.join(_root, "*" + _ext)):
-                _BINARIES.append((_f, _target))
-
 block_cipher = None
 
 a = Analysis(
@@ -42,11 +21,12 @@ a = Analysis(
      os.path.join(SPEC_DIR, "run.py"),
      os.path.join(SPEC_DIR, "gateway_server.py")],
     pathex=[SRC_DIR],
-    binaries=_BINARIES,
+    binaries=[],
     datas=[
         (PROMPTS_DIR, "prompts"),
         (os.path.join(SPEC_DIR, ".env.example"), "."),
         (_CA_BUNDLE, "certifi"),
+        (os.path.join(SPEC_DIR, "VERSION"), "."),
     ],
     hiddenimports=[
         "json5",
@@ -84,10 +64,20 @@ a = Analysis(
         "mcp.shared",
         "mcp.shared.message",
         "mcp.types",
+        "agent_core.mcp",
+        "agent_core.mcp_client",
+        "agent_core.mcp_client.config",
+        "agent_core.mcp_client.manager",
+        "agent_core.mcp_client.http_sse",
+        "agent_core.mcp_client.stdio_client",
+        "agent_core.mcp_client.manifest_cache",
+        "agent_core.setup_wizard",
+        "agent_core.version",
+        "agent_core.update",
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[os.path.join(SPEC_DIR, "pyi_rth_crypto.py")],
+    runtime_hooks=[],
     excludes=[
         "tkinter",
         "matplotlib",

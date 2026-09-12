@@ -32,6 +32,22 @@ if _SRC not in sys.path:
 
 from dotenv import load_dotenv
 from agent_core.memory.files import read_long_term_memory_block
+from agent_core.setup_wizard import ensure_llm_configured
+from agent_core.update import auto_check_and_notify
+
+
+def _normalize_llm_env():
+    for primary, *fallbacks in [
+        ("LLM_API_KEY", "OPENAI_API_KEY", "API_KEY"),
+        ("LLM_BASE_URL", "OPENAI_BASE_URL", "BASE_URL"),
+        ("LLM_MODEL", "OPENAI_MODEL", "MODEL_NAME"),
+    ]:
+        if not (os.getenv(primary) or "").strip():
+            for fb in fallbacks:
+                v = (os.getenv(fb) or "").strip()
+                if v:
+                    os.environ[primary] = v
+                    break
 
 def _clean_env_value(v: str) -> str:
     if v is None:
@@ -56,8 +72,13 @@ def _preparse_instance_dir(argv: List[str]) -> str:
 
 def _bootstrap_instance(argv: List[str]) -> None:
     instance_dir = _clean_env_value(_preparse_instance_dir(argv))
+
+    global_env = os.path.join(os.path.expanduser("~"), ".nanoghost", ".env")
+    if os.path.isfile(global_env):
+        load_dotenv(dotenv_path=global_env, override=False)
+    _normalize_llm_env()
+
     if not instance_dir:
-        load_dotenv()
         return
 
     instance_dir = os.path.abspath(os.path.expanduser(instance_dir))
@@ -75,8 +96,7 @@ def _bootstrap_instance(argv: List[str]) -> None:
     dotenv_path = os.path.join(instance_dir, ".env")
     if os.path.isfile(dotenv_path):
         load_dotenv(dotenv_path=dotenv_path, override=True)
-    else:
-        load_dotenv()
+        _normalize_llm_env()
 
 
 _bootstrap_instance(sys.argv)
@@ -236,6 +256,16 @@ def _fmt_event(ev_type: str, ev_data: dict) -> str:
 
 def run_cli_chat():
     """交互式 CLI 聊天模式，支持 /skill-name 斜杠命令。"""
+    if not (os.getenv("INSTANCE_DIR") or "").strip():
+        logger.error("未指定实例目录。请使用 -I <实例名> 启动。\n"
+                      "  python run.py -I <实例名>\n"
+                      "  nanoghost -I <实例名>")
+        return
+    if not (os.getenv("LLM_API_KEY") or "").strip():
+        if not ensure_llm_configured():
+            return
+    auto_check_and_notify()
+
     try:
         import readline  # Unix: 行编辑和 history
     except ImportError:
@@ -419,6 +449,9 @@ def assemble_sys_prompt() -> str:
 
 def run_single_turn(message: str, skill_name: Optional[str] = None):
     """单次对话模式。"""
+    if not (os.getenv("LLM_API_KEY") or "").strip():
+        if not ensure_llm_configured():
+            return
     db = SqliteDatabase()
     llm = OpenAILLM()
     image_port = SqliteImagePort(db)
@@ -459,6 +492,9 @@ def run_single_turn(message: str, skill_name: Optional[str] = None):
 
 
 async def run_feishu():
+    if not (os.getenv("LLM_API_KEY") or "").strip():
+        if not ensure_llm_configured():
+            return
     if not os.getenv("FEISHU_APP_ID") or not os.getenv("FEISHU_APP_SECRET"):
         logger.error("飞书模式需要设置 FEISHU_APP_ID 和 FEISHU_APP_SECRET")
         return
