@@ -183,7 +183,9 @@ skills:
 ├── docs/
 │   ├── memory-system-v3-spec.md # 记忆系统 v3 设计文档（当前唯一 truth source）
 │   ├── complete-changelist.md   # 完整改造清单
-│   └── usage.md                 # 使用指南
+│   ├── usage.md                 # 作为 Python 库嵌入 agent_core 的用法
+│   ├── DEPLOYMENT.md            # 部署与发布（用户怎么用 / 开发者怎么发版）
+│   └── UPDATING.md              # 升级机制细节（调用契约、退出码、结果文件）
 ├── src/agent_core/
 │   ├── agent.py                 # Agent 主类
 │   ├── cli.py                   # CLI 命令行接口
