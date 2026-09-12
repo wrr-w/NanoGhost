@@ -45,6 +45,13 @@ Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
 [Files]
 Source: "{#MyBuildDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+; 默认的自动更新配置。没有它客户装完就是"未配置 repo，升级不可用"——而客户
+; 不可能知道这个文件的存在。（程序内也有默认 repo 兜底，这里落文件是为了让
+; 配置可见、可改。）
+;   onlyifdoesntexist   升级安装时不覆盖用户改过的配置
+;   uninsneveruninstall 属于用户数据，随 .nanoghost 一起保留
+Source: "update.default.json"; DestDir: "{userprofile}\.nanoghost"; DestName: "update.json"; Flags: onlyifdoesntexist uninsneveruninstall
+
 ; 本机由外部项目负责启动和管理 NanoGhost，所以这里刻意不做三件事：
 ;   1. 不建快捷方式（[Icons] / [Tasks]）—— 手动点是废的，且会起一个管理器不知道的野进程
 ;   2. 不自动启动（[Run]）—— 同上

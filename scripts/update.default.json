@@ -1,0 +1,4 @@
+{
+  "_note": "NanoGhost auto-update config. repo = GitHub owner/repo. Optional keys: download_base (mirror or proxy prefix, for networks that cannot reach github.com), asset_prefix (default 'nanoghost').",
+  "repo": "wrr-w/NanoGhost"
+}

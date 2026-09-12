@@ -12,6 +12,12 @@ def _app_dir() -> str:
     return os.getcwd()
 
 
+# 默认仓库。必须有 —— 客户不可能知道 update.json 这个文件的存在，只靠配置文件
+# 的话装机后开箱就是"未配置 repo，升级不可用"。update.json 里显式配的 repo
+# 优先，便于换源或自建分发。
+DEFAULT_REPO = "wrr-w/NanoGhost"
+
+
 def _config_path() -> str:
     return os.path.join(os.path.expanduser("~"), ".nanoghost", "update.json")
 
@@ -21,18 +27,44 @@ def _read_config() -> dict:
     if not os.path.isfile(path):
         return {}
     try:
-        return json.loads(open(path, encoding="utf-8").read())
+        data = json.loads(open(path, encoding="utf-8").read())
+        return data if isinstance(data, dict) else {}
     except Exception:
+        # 配置坏了就退回默认值（默认 repo 能正常工作），不因为一个手滑的逗号
+        # 让整个升级功能失效
         return {}
 
 
-def _check_github(repo: str, asset_prefix: str = "nanoghost") -> tuple[bool, str, str]:
+def _apply_download_base(url: str, cfg: dict) -> str:
+    """按 download_base 改写下载地址前缀。
+
+    客户机器直连 github.com 可能不通（实测本机就是单点阻断），需要把下载源
+    指到自建服务器或加速代理。配置的是"到 releases/download 为止"的前缀：
+
+        自建   "https://dl.example.com/nanoghost"
+               → https://dl.example.com/nanoghost/v1.0.0/NanoGhost-...zip
+        代理   "https://ghproxy.net/https://github.com/wrr-w/NanoGhost/releases/download"
+
+    留空就用 GitHub 原始地址。
+    """
+    base = (cfg.get("download_base") or "").strip().rstrip("/")
+    if not base:
+        return url
+    marker = "/releases/download/"
+    i = url.find(marker)
+    if i < 0:
+        return url          # 不是标准 release 地址，不认识就别乱改
+    return f"{base}/{url[i + len(marker):]}"
+
+
+def _check_github(repo: str, asset_prefix: str = "nanoghost",
+                  timeout: int = 15) -> tuple[bool, str, str]:
     import requests
     try:
         r = requests.get(
             f"https://api.github.com/repos/{repo}/releases/latest",
             headers={"Accept": "application/vnd.github+json"},
-            timeout=15,
+            timeout=timeout,
         )
         r.raise_for_status()
         data = r.json()
@@ -60,18 +92,18 @@ def _check_github(repo: str, asset_prefix: str = "nanoghost") -> tuple[bool, str
         return False, "", str(e)
 
 
-def check_for_updates() -> tuple[bool, str, str]:
+def check_for_updates(timeout: int = 15) -> tuple[bool, str, str]:
     from agent_core.version import current_version, compare_versions
 
     cfg = _read_config()
-    repo = (cfg.get("repo") or "").strip()
-    if not repo:
-        return False, "", "未配置 repo，请在 ~/.nanoghost/update.json 设置 {\"repo\": \"owner/repo\"}"
+    repo = (cfg.get("repo") or DEFAULT_REPO).strip()
 
     local = current_version()
-    ok, remote_version, url = _check_github(repo, cfg.get("asset_prefix") or "nanoghost")
+    ok, remote_version, url = _check_github(
+        repo, cfg.get("asset_prefix") or "nanoghost", timeout=timeout)
     if not ok:
         return False, "", f"检查更新失败: {url}"
+    url = _apply_download_base(url, cfg)
     if compare_versions(remote_version, local) > 0:
         return True, remote_version, url
     return False, remote_version, url
@@ -216,6 +248,75 @@ def _write_update_bat(
     return bat
 
 
+def _validate_package(path: str, expected: int) -> str:
+    """确认下到的确实是个完整的 zip。没问题返回 ""，否则返回给用户看的原因。
+
+    为什么非查不可（两个都是实测撞到的）:
+
+    1. release 刚发布完的几秒内，服务端还没传播完，请求会返回 **200 但内容是
+       错误页**而不是包。只看状态码会当成成功，然后写进临时包，最后在解压阶段
+       炸成 "FAIL:expand" —— 报错指向"包损坏"，让人往完全错误的方向排查。
+    2. 这条线路（国内直连 GitHub）传输中断很常见，会留下半个文件。
+
+    两者都是"重试就能好"的情况，所以错误信息直接这么写，别让人去查网络配置。
+    """
+    if expected and os.path.getsize(path) != expected:
+        return (f"下载不完整: 收到 {os.path.getsize(path):,} / 应为 {expected:,} 字节。"
+                f"传输中断，重试即可。")
+    with open(path, "rb") as f:
+        head = f.read(4)
+    if head[:2] != b"PK":
+        return ("下载到的不是压缩包（可能刚发布还没传播完，或被网络设备拦截）。"
+                "等一两分钟重试。")
+    return ""
+
+
+def _download(url: str, dest: str, interactive: bool) -> tuple[bool, str]:
+    """下载并校验，失败自动重试。
+
+    升级包有 70MB+，在真实网络下一次拉成功的概率不高。没有重试的话，用户看到的
+    是"升级失败"然后得自己再点一次 —— 而这类失败绝大多数重试就好了。
+    """
+    import requests
+
+    last = "未知错误"
+    for attempt in range(1, 4):
+        try:
+            if interactive and attempt > 1:
+                print(f"  第 {attempt} 次重试...")
+            with requests.get(url, stream=True, timeout=(15, 120)) as r:
+                r.raise_for_status()
+                total = int(r.headers.get("content-length", 0))
+                got = 0
+                with open(dest, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=65536):
+                        f.write(chunk)
+                        got += len(chunk)
+                        if interactive and total > 0:
+                            print(f"\r  进度: {got * 100 // total}% ({got}/{total})",
+                                  end="", flush=True)
+                if interactive:
+                    print()
+            err = _validate_package(dest, total)
+            if not err:
+                return True, ""
+            last = err
+        except Exception as e:
+            last = f"{type(e).__name__}: {e}"
+            if interactive:
+                print()
+        if interactive:
+            print(f"  下载失败: {last}")
+        # 半截文件留着只会让下次的校验更迷惑，直接清掉重来
+        try:
+            if os.path.isfile(dest):
+                os.remove(dest)
+        except OSError:
+            pass
+
+    return False, f"下载失败（已重试 3 次）: {last}"
+
+
 def apply_update(
     download_url: str,
     interactive: bool = True,
@@ -247,19 +348,9 @@ def apply_update(
 
         if interactive:
             print(f"  下载: {download_url}")
-        r = requests.get(download_url, stream=True, timeout=300)
-        r.raise_for_status()
-        total = int(r.headers.get("content-length", 0))
-        with open(tmp_zip, "wb") as f:
-            downloaded = 0
-            for chunk in r.iter_content(chunk_size=8192):
-                f.write(chunk)
-                downloaded += len(chunk)
-                if interactive and total > 0:
-                    pct = downloaded * 100 // total
-                    print(f"\r  进度: {pct}% ({downloaded}/{total})", end="", flush=True)
-        if interactive:
-            print()
+        ok, err = _download(download_url, tmp_zip, interactive)
+        if not ok:
+            return False, err
 
         app_dir = _app_dir()
         batch = _write_update_bat(
@@ -276,14 +367,57 @@ def apply_update(
         return False, str(e)
 
 
+def _last_check_path() -> str:
+    return os.path.join(os.path.expanduser("~"), ".nanoghost", ".last_update_check")
+
+
+# 启动路径上自动检查的最小间隔。这个函数是**同步**调用的（run.py / cli.py 在进
+# REPL 之前调用它），所以它的耗时直接加在用户等待启动的时间上。网络不通时一次
+# 检查要耗到超时，天天卡着就不是能忍受的了，因此限制成一天最多认真查一次。
+AUTO_CHECK_INTERVAL = 24 * 3600
+# 自动检查单独用更短的超时：GitHub API 正常时 1~2 秒内就返回，等满 15 秒
+# 只可能是网络不通，而那种情况下这个结果也没人会看。
+AUTO_CHECK_TIMEOUT = 6
+
+
+def _should_auto_check() -> bool:
+    """判断今天是否已经查过。读不到/写不了时间戳都当作"该查"，不影响功能。"""
+    try:
+        last = float(open(_last_check_path(), encoding="utf-8").read().strip())
+    except Exception:
+        return True
+    import time
+    return (time.time() - last) >= AUTO_CHECK_INTERVAL
+
+
+def _mark_checked() -> None:
+    import time
+    try:
+        path = _last_check_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(str(time.time()))
+    except Exception:
+        pass
+
+
 def auto_check_and_notify() -> None:
+    """启动时提示新版本。失败一律静默 —— 这条路不该影响用户开程序。
+
+    这里**不判断** update.json 是否存在。默认 repo 已经兜底，再加一道"必须先配
+    置"的闸门就等于客户装完永远收不到提示。想关掉用 NANOGHOST_DISABLE_AUTO_UPDATE。
+    """
     disabled = (os.getenv("NANOGHOST_DISABLE_AUTO_UPDATE") or "").strip().lower() in ("1", "true", "yes")
     if disabled:
         return
-    cfg = _read_config()
-    if not cfg.get("repo"):
+    if not _should_auto_check():
         return
-    has_update, version, _url = check_for_updates()
+    # 先记时间戳再查：查的过程中被 Ctrl+C 打断也不该让下次启动又卡一遍
+    _mark_checked()
+    try:
+        has_update, version, _url = check_for_updates(timeout=AUTO_CHECK_TIMEOUT)
+    except Exception:
+        return
     if has_update:
         from agent_core.version import current_version
         local = current_version()

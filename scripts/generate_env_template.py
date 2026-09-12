@@ -14,7 +14,10 @@ ENV_CATEGORIES = {
     u"实例隔离": ["INSTANCE_DIR", "AGENT_NAMESPACE", "AGENT_WORKDIR", "AGENT_PROMPTS_DIR"],
     u"技能/MCP": ["AGENTS_SKILLS_DIR", "NANOGHOST_GLOBAL_CONFIG",
                   "NANOGHOST_INSTANCES_ROOT", "NANOGHOST_RUNPY"],
-    u"更新": ["NANOGHOST_UPDATE_URL", "NANOGHOST_DISABLE_AUTO_UPDATE"],
+    # 注意：更新源（repo / download_base / asset_prefix）配在 update.json 里，
+    # 不是环境变量 —— 见 docs/UPDATING.md。这里只放升级流程本身的开关。
+    u"更新": ["NANOGHOST_DISABLE_AUTO_UPDATE",
+              "NANOGHOST_UPDATE_LOG", "NANOGHOST_UPDATE_RESULT"],
     u"网络": ["NO_PROXY"],
 }
 
@@ -39,7 +42,7 @@ CATEGORY_COMMENTS = {
     "Agent": u"Agent 运行模式与后端",
     u"实例隔离": u"多实例隔离配置",
     u"技能/MCP": u"技能 / MCP 配置",
-    u"更新": u"自动更新配置",
+    u"更新": u"升级流程开关（更新源配在 ~/.nanoghost/update.json）",
     u"网络": u"网络 / 代理",
 }
 
