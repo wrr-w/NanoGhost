@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 from agent_core.engine.agent import Agent
 from agent_core.channel.instance import BotInstance
 from agent_core.channel.session import SessionStore
-from agent_core.channel.message_context import ContextBuilder
+from agent_core.channel.message_context import ContextBuilder, MessageSource, MessageContext
 from agent_core.channel.interfaces import ChannelIO
 from agent_core.presenter import run_agent_turn
 
@@ -25,7 +25,20 @@ from .tools import register_feishu_tools
 from .sdk import FeishuSDK
 from .turn import FeishuTurnParser
 from .io import FeishuIO
+from .channel import FeishuChannel
 from . import api
+
+# P0：通道注册表 + 端点目录
+from agent_core.channel.registry import register_channel
+from agent_core.channel.directory import register_endpoint
+
+# P1：收件箱 + 常驻消费者
+from agent_core.runtime.inbox import InboxEvent, get_hub
+from agent_core.runtime.consumer import ResidentConsumer
+
+# P2：出站路由 + 出站镜像
+from agent_core.router import get_router
+from agent_core.channel.endpoint import parse_addr
 
 logger = logging.getLogger("agent_core")
 
@@ -64,6 +77,22 @@ class FeishuWSClient:
         self.turn = FeishuTurnParser(self._context_builder)
         self.io = FeishuIO()
         self.io.set_name_map(self.sessions.mention_name_map)
+
+        # 通道注册（P0）：把飞书套成统一 Channel 并登记进注册表
+        self.channel = FeishuChannel(io=self.io)
+        try:
+            register_channel(self.channel)
+        except Exception:
+            logger.exception("[Feishu WS] register channel failed")
+
+        # 常驻消费者（P1）：所有入站消息先入「每端点队列」，再由此处按忙闲消费
+        self.consumer = ResidentConsumer(get_hub(), self._handle_inbox_batch)
+
+        # 出站镜像（P2）：主动发到「别的端点」时，把这条也写进【目标会话】
+        try:
+            get_router().set_mirror(self._mirror_outbound)
+        except Exception:
+            logger.exception("[Feishu WS] set router mirror failed")
 
         # 注册飞书特有工具（lookup_user 等，替代全量群成员 dump）
         register_feishu_tools(self.agent, self.sessions.mention_name_map)
@@ -109,14 +138,40 @@ class FeishuWSClient:
             logger.warning("[Feishu WS] FEISHU_APP_ID/FEISHU_APP_SECRET not configured")
             return
 
+        # 启动常驻消费者（P1）：与 WS 并列；所有入站消息都经它消费
+        try:
+            self.consumer.start()
+        except Exception:
+            logger.exception("[Feishu WS] consumer start failed")
+
+        # 启动子 Agent 池（P3）：后台子任务并行执行 + 完成回报
+        try:
+            from agent_core.runtime.subagent_pool import get_pool
+            get_pool()
+        except Exception:
+            logger.exception("[Feishu WS] subagent pool start failed")
+
+        # 启动 Watcher（P4）：盯变化的「事件源」（无 watch 时为空转）
+        try:
+            from agent_core.runtime.watcher import get_watcher
+            get_watcher().start()
+        except Exception:
+            logger.exception("[Feishu WS] watcher start failed")
+
         self.sdk.start()
-        while self._running:
-            if not self.sdk.is_alive():
-                logger.warning("[Feishu WS] SDK thread died, restarting in 5s")
-                await asyncio.sleep(5)
-                if self._running:
-                    self.sdk.start()
-            await asyncio.sleep(1)
+        try:
+            while self._running:
+                if not self.sdk.is_alive():
+                    logger.warning("[Feishu WS] SDK thread died, restarting in 5s")
+                    await asyncio.sleep(5)
+                    if self._running:
+                        self.sdk.start()
+                await asyncio.sleep(1)
+        finally:
+            try:
+                self.consumer.stop()
+            except Exception:
+                logger.exception("[Feishu WS] consumer stop failed")
 
     # ════════════════════════════════════════════
     # SDK 回调
@@ -169,12 +224,102 @@ class FeishuWSClient:
             # 自动解析 bot_id（首次收到消息时）
             self._ensure_bot_id()
 
-            threading.Thread(
-                target=lambda: asyncio.run(self._process(event_data)),
-                daemon=True,
-            ).start()
+            # 入队（P1）：所有入站消息先进「每端点队列」，由常驻消费者按忙闲消费
+            try:
+                self.consumer.submit(
+                    f"feishu:{chat_id}",
+                    InboxEvent(
+                        target=f"feishu:{chat_id}",
+                        kind="channel_message",
+                        source="feishu",
+                        summary=f"{chat_type} {sender_open_id}",
+                        payload=event_data,
+                    ),
+                )
+            except Exception:
+                logger.exception("[Feishu WS] consumer submit failed, fallback to thread")
+                threading.Thread(
+                    target=lambda: asyncio.run(self._process(event_data)),
+                    daemon=True,
+                ).start()
         except Exception:
             logger.exception("[Feishu WS] SDK callback error")
+
+    async def _handle_inbox_batch(self, target: str, events) -> None:
+        """常驻消费者回调（P1/P3）：处理某端点的一批事件（端点内串行）。
+
+        事件类别：
+          · channel_message → 走既有的 _process（一条消息一轮）
+          · timer           → 定时任务（交给 scheduler.run_task_once）
+          · subagent_done   → 后台子任务完成（父 agent 闲 → 起一轮告知）
+        """
+        for ev in events:
+            try:
+                if ev.kind == "channel_message":
+                    await self._process(ev.payload)
+                elif ev.kind == "timer":
+                    from agent_core.scheduler import run_task_once
+                    task = (ev.payload or {}).get("task")
+                    if task is not None:
+                        await run_task_once(self, task)
+                elif ev.kind == "subagent_done":
+                    await self._on_subagent_done(target, ev.payload or {})
+                else:
+                    logger.info("[Feishu WS] ignore event kind=%s (target=%s)", ev.kind, target)
+            except Exception:
+                logger.exception("[Feishu WS] handle event failed (kind=%s target=%s)", ev.kind, target)
+
+    async def _on_subagent_done(self, target: str, payload: Dict[str, Any]) -> None:
+        """后台子任务完成（P3）：父 agent 空闲时，起一轮把完成结果告知它。"""
+        desc = payload.get("description") or ""
+        status = payload.get("status") or ""
+        if status == "done":
+            body = f"[后台子任务完成] 「{desc}」已完成：\n{(payload.get('result') or '')[:2000]}"
+        else:
+            body = f"[后台子任务失败] 「{desc}」执行失败：{payload.get('error')}"
+        _, chat_id = parse_addr(target)
+        logger.info("[Feishu WS] subagent_done → 起一轮告知 chat_id=%s run_id=%s", chat_id, payload.get("run_id"))
+        source = MessageSource(
+            platform="feishu",
+            chat_id=chat_id,
+            chat_name="后台子任务",
+            chat_type="p2p",
+            sender_id="__subagent__",
+            sender_name="后台子任务",
+            is_bot=True,
+        )
+        ctx = MessageContext(text=body, message_type="text", message_id="")
+        user_text = self._context_builder.build_user_message(source, ctx)
+        await run_agent_turn(
+            agent=self.agent,
+            identity=self.instance,
+            sessions=self.sessions,
+            io=self.io,
+            context_builder=self._context_builder,
+            source=source,
+            ctx=ctx,
+            user_text=user_text,
+            images_base64=None,
+            base_url=self._base_url,
+            api_spec=self._api_spec,
+            channel_ctx={"chat_id": chat_id, "platform": "feishu",
+                         "subagent_done": True, "run_id": payload.get("run_id")},
+        )
+
+    def _mirror_outbound(self, addr: str, text: str) -> None:
+        """出站镜像（P2）：把主动发到「别的端点」的消息写进**目标会话**历史。
+
+        由 router 在投递成功后回调（仅当 target != 来源会话）。
+        """
+        try:
+            _, chat_id = parse_addr(addr)
+            if not chat_id:
+                return
+            session_id, _ = self.sessions.get_or_create(chat_id)
+            self.agent.db.add_agent_message(session_id, "assistant", text, type="text")
+            logger.info("[Feishu WS] mirror → %s (session=%s)", addr, session_id)
+        except Exception:
+            logger.exception("[Feishu WS] mirror outbound failed addr=%s", addr)
 
     # ════════════════════════════════════════════
     # 编排流程
@@ -226,6 +371,25 @@ class FeishuWSClient:
         if self.instance.bot_id and source.sender_id == self.instance.bot_id:
             logger.info("[Feishu WS] SKIP message sent by self")
             return
+
+        # 3.7 端点动态注册（P0）：收到消息即登记「这个会话端点」
+        try:
+            kind = "group" if source.is_group else "user"
+            register_endpoint(
+                f"feishu:{source.chat_id}",
+                channel="feishu",
+                kind=kind,
+                capabilities=self.channel.capabilities(),
+                meta={
+                    "chat_id": source.chat_id,
+                    "chat_name": source.chat_name,
+                    "chat_type": source.chat_type,
+                    "sender_id": source.sender_id,
+                    "sender_name": source.sender_name,
+                },
+            )
+        except Exception:
+            logger.exception("[Feishu WS] register endpoint failed")
 
         if not ctx.text and not ctx.mentions:
             logger.info("[Feishu WS] SKIP empty text and no mentions")

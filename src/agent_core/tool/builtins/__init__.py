@@ -3,6 +3,7 @@ from typing import Any
 from .ask import ASK_USER_DEF, ask_user
 from .delegate import DELEGATE_TASK_DEF, delegate_task
 from .edit import EDIT_DEF, edit_file
+from .endpoints import LIST_ENDPOINTS_DEF, list_endpoints
 from .glob import GLOB_DEF, glob_files
 from .grep import GREP_DEF, grep_search
 from .memory import (
@@ -18,6 +19,7 @@ from .memory import (
     memory_write,
 )
 from .read import READ_DEF, read_file
+from .send import SEND_MESSAGE_DEF, send_message
 from .skills import (
     SKILL_INSTALL_DEF,
     SKILL_MANAGE_DEF,
@@ -29,6 +31,14 @@ from .skills import (
     skill_manage,
     skills_list,
     use_skill,
+)
+from .tasks import (
+    CANCEL_SCHEDULED_TASK_DEF,
+    LIST_SCHEDULED_TASKS_DEF,
+    SCHEDULE_TASK_DEF,
+    cancel_scheduled_task,
+    list_scheduled_tasks,
+    schedule_task,
 )
 from .terminal import TERMINAL_DEF, terminal
 from .write import WRITE_DEF, write_file
@@ -108,3 +118,32 @@ def register_builtins(registry: Any) -> None:
     registry.register("delegate_task", delegate_task,
                       description="Delegate task to sub-agent.",
                       parameters=DELEGATE_TASK_DEF, category="subagent")
+
+    # ── 定时任务（agent 自助）────────────────────────────
+    registry.register("schedule_task", schedule_task,
+                      description="创建定时任务：让 agent 在指定时刻自动执行一段指令。"
+                                  "支持 cron（『0 3 * * *』=每天3点）、daily_at（『15:00』）、"
+                                  "interval（每N秒）、at（一次性）。"
+                                  "例：用户说『每天3点校验工单』→ cron='0 3 * * *'。"
+                                  "创建后无需重启，最长5秒生效。",
+                      parameters=SCHEDULE_TASK_DEF, category="task")
+
+    registry.register("list_scheduled_tasks", list_scheduled_tasks,
+                      description="列出当前所有定时任务（含调度方式、下次执行时间、已执行次数）。",
+                      parameters=LIST_SCHEDULED_TASKS_DEF, category="task")
+
+    registry.register("cancel_scheduled_task", cancel_scheduled_task,
+                      description="取消一个定时任务（按 name 或 id）。",
+                      parameters=CANCEL_SCHEDULED_TASK_DEF, category="task")
+
+    # ── 出站（P2）：模型自由路由 ─────────────────────────
+    registry.register("send_message", send_message,
+                      description="把消息发到指定端点（不填 to = 回当前会话）。"
+                                  "to 可填多个地址（'channel:target'，如 feishu:oc_xxx）实现一对多。",
+                      parameters=SEND_MESSAGE_DEF, category="channel")
+
+    # ── 通道管理（P4）：看端点菜单 ───────────────────────
+    registry.register("list_endpoints", list_endpoints,
+                      description="列出可发送的端点（地址/类别/状态/能力）+ 各通道概览。"
+                                  "用于决定 send_message 的 to。",
+                      parameters=LIST_ENDPOINTS_DEF, category="channel")

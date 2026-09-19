@@ -19,11 +19,19 @@ _SUBAGENT_PRESETS: Dict[str, Dict[str, Any]] = {
 _BLOCKED_SUBAGENT_TOOLS = {"delegate_task", "ask_user", "skill_install"}
 
 
+def _parent_target(ctx: Dict[str, Any]) -> str:
+    """父端点地址（用于子任务完成后回报）。"""
+    cc = (ctx or {}).get("channel_ctx") or {}
+    chat_id = cc.get("chat_id") or ""
+    platform = cc.get("platform") or "feishu"
+    return f"{platform}:{chat_id}" if chat_id else ""
+
+
 def delegate_task(args: Dict[str, Any], ctx: Dict[str, Any]) -> ToolResult:
     sub_type = (args.get("subagent_type") or "general").strip()
     prompt = (args.get("prompt") or "").strip()
     description = (args.get("description") or prompt[:50]).strip()
-    run_in_background = args.get("run_in_background", False)
+    run_in_background = args.get("run_in_background", True)
     if not prompt:
         return ToolResult(ok=False, error="缺少 prompt 参数")
     agent = ctx.get("agent")
@@ -70,28 +78,26 @@ def delegate_task(args: Dict[str, Any], ctx: Dict[str, Any]) -> ToolResult:
             "name": sub_name, "type": sub_type, "description": description,
         })
     if run_in_background:
-        import threading as _sub_threading
-        _bg_results: Dict[str, Any] = {}
+        from agent_core.runtime.subagent_pool import get_pool
 
-        def _run():
-            import asyncio as _sub_asyncio
-            try:
-                async def _run_bg():
-                    _reply = ""
-                    async for _ev_type, _ev_data in sub.chat_stream_events(
-                        user_message=prompt, session_id=None, config=sub_config,
-                    ):
-                        if _ev_type == "done":
-                            _reply = _ev_data.get("reply", "")
-                    return _reply
-                _bg_results["reply"] = _sub_asyncio.run(_run_bg())
-            except Exception as e:
-                _bg_results["error"] = str(e)
+        async def _run_bg():
+            _reply = ""
+            async for _ev_type, _ev_data in sub.chat_stream_events(
+                user_message=prompt, session_id=None, config=sub_config,
+            ):
+                if _ev_type == "done":
+                    _reply = (_ev_data or {}).get("reply", "")
+            return _reply
 
-        t = _sub_threading.Thread(target=_run, daemon=True, name=sub_name)
-        t.start()
+        run_id = get_pool().submit(
+            target=_parent_target(ctx),
+            description=description,
+            run_fn=_run_bg,
+            kind=sub_type,
+        )
         return ToolResult(
-            ok=True, data=f"后台子任务 [{description}] 已启动 (ID: {sub_name})",
+            ok=True,
+            data=f"子任务 [{description}] 已提交后台执行（run_id={run_id}），完成后会在边界告知你。",
             signal="__continue__",
         )
     import asyncio as _asyncio_for_sub
@@ -139,7 +145,8 @@ DELEGATE_TASK_DEF = {
         },
         "run_in_background": {
             "type": "boolean",
-            "description": "是否在后台运行（父代理不等待结果）",
+            "description": "是否后台运行（默认 true：立即返回 run_id、不等待，完成后在边界回报）。"
+                           "设 false 则同步等待子代理结果。",
         },
     },
     "required": ["prompt"],

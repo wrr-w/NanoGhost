@@ -59,6 +59,41 @@ def _get_default_db() -> DatabasePort:
     return _default_db
 
 
+# ── P3：ReAct 边界的「事件注入」（后台完成等，忙时不打断本轮）──────
+_BOUNDARY_KINDS = {"subagent_done", "event"}
+
+
+def _boundary_target(channel_ctx: Optional[Dict[str, Any]]) -> str:
+    cc = channel_ctx or {}
+    chat_id = cc.get("chat_id") or ""
+    platform = cc.get("platform") or "feishu"
+    return f"{platform}:{chat_id}" if chat_id else ""
+
+
+def _drain_boundary_events(channel_ctx: Optional[Dict[str, Any]]) -> List[Any]:
+    """取走该端点收件箱里的「软事件」（不含通道消息 —— 那是下一轮的活）。"""
+    target = _boundary_target(channel_ctx)
+    if not target:
+        return []
+    from agent_core.runtime.inbox import get_hub
+    return get_hub().drain(target, kinds=_BOUNDARY_KINDS)
+
+
+def _format_boundary_events(events: List[Any]) -> str:
+    lines = ["[系统事件]（agent 忙时产生，供你参考；自行决定是否处理 / 是否告知用户）"]
+    for ev in events:
+        p = ev.payload if isinstance(ev.payload, dict) else {}
+        if ev.kind == "subagent_done":
+            desc = p.get("description") or ""
+            if p.get("status") == "done":
+                lines.append(f"· 子任务「{desc}」完成：{(p.get('result') or '')[:800]}")
+            else:
+                lines.append(f"· 子任务「{desc}」失败：{p.get('error')}")
+        else:
+            lines.append(f"· 事件 {ev.kind}：{ev.summary or ''}")
+    return "\n".join(lines)
+
+
 class Agent:
     """Agent 主类。每个实例独立管理端口、记忆域、Skill、工具和 SubAgent。"""
 
@@ -225,6 +260,7 @@ class Agent:
         session_id: Optional[str],
         config: AgentConfig,
         images: Optional[List[str]] = None,
+        channel_ctx: Optional[Dict[str, Any]] = None,
     ):
         """流式 Agent 对话。
 
@@ -233,6 +269,7 @@ class Agent:
             session_id: 会话 ID（None 表示不持久化）
             config: Agent 配置（base_url, sys_prompt, api_spec）
             images: 图片 Base64 列表
+            channel_ctx: 渠道上下文（如 {"chat_id": ...}），供工具读取
 
         Yields:
             (event_type, event_data) 事件对
@@ -243,6 +280,7 @@ class Agent:
             session_id=session_id,
             config=config,
             images=images,
+            channel_ctx=channel_ctx,
         ):
             yield ev
 
@@ -267,6 +305,7 @@ class AgentExecutor:
         session_id: Optional[str],
         config: AgentConfig,
         images: Optional[List[str]] = None,
+        channel_ctx: Optional[Dict[str, Any]] = None,
     ) -> AsyncIterator[Tuple[str, Dict[str, Any]]]:
         """流式 Agent 对话。
 
@@ -275,6 +314,7 @@ class AgentExecutor:
             session_id: 会话 ID（None 表示不持久化）
             config: Agent 配置（base_url, sys_prompt, api_spec）
             images: 图片 Base64 列表
+            channel_ctx: 渠道上下文（chat_id 等），透传给工具
 
         Yields:
             (event_type, event_data) 事件对
@@ -366,6 +406,19 @@ class AgentExecutor:
 
             _pending_events: List[Tuple[str, Dict[str, Any]]] = []
 
+            # ---- P3：ReAct 边界 drain（后台事件注入；首轮跳过，避免连续 user 消息）----
+            if _round > 0:
+                try:
+                    _drained = _drain_boundary_events(channel_ctx)
+                    if _drained:
+                        messages.append({
+                            "role": "user",
+                            "content": [{"type": "text", "text": _format_boundary_events(_drained)}],
+                        })
+                        logger.info("[Agent] boundary injected %d event(s)", len(_drained))
+                except Exception:
+                    logger.exception("[Agent] boundary drain failed")
+
             tool_context = {
                 "db": self.agent.db,
                 "llm": self.agent.llm,
@@ -381,6 +434,7 @@ class AgentExecutor:
                 "all_step_results": all_step_results,
                 "yield_event": _yield_event,
                 "delegate_depth": 0,
+                "channel_ctx": channel_ctx or {},
             }
 
             # ---- 调用 LLM ----

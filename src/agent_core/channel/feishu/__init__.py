@@ -24,9 +24,11 @@ from .api import (
 from .sdk import FeishuSDK
 from .turn import FeishuTurnParser
 from .ws_client import FeishuWSClient
+from .channel import FeishuChannel
 
 __all__ = [
     "FeishuWSClient",
+    "FeishuChannel",
     "FeishuSDK",
     "FeishuTurnParser",
     "get_tenant_access_token",
