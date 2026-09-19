@@ -510,7 +510,13 @@ async def run_feishu():
     )
 
     logger.info("Agent 启动完毕, 等待飞书消息...")
-    await ws_client.run_forever()
+    # 定时任务：与飞书渠道并行 —— 到点直接调 run_agent_turn（不经过飞书）。
+    # 任务定义见 <实例>/tasks.json；没配置就是纯空转。
+    from agent_core.scheduler import scheduler_loop
+    await asyncio.gather(
+        ws_client.run_forever(),
+        scheduler_loop(ws_client),
+    )
 
 
 if __name__ == "__main__":

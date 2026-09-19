@@ -71,6 +71,7 @@ async def run_agent_turn(
     images_base64: Optional[List[str]] = None,
     base_url: str = "",
     api_spec: Optional[Dict] = None,
+    channel_ctx: Optional[Dict] = None,
 ) -> str:
     """执行一轮 Agent 对话。
 
@@ -149,6 +150,7 @@ async def run_agent_turn(
             session_id=session_id,
             config=config,
             images=images_base64 or None,
+            channel_ctx=channel_ctx or {"chat_id": chat_id, "platform": source.platform},
         ):
             if ev_type == "text_stream" and feedback_level >= 2:
                 text_stream_content = ((ev_data or {}).get("content") or "").strip()
