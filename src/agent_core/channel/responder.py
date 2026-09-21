@@ -1,20 +1,20 @@
 # -*- coding: utf-8 -*-
 """当前会话输出边界（回合输出的唯一门面）。
 
-把 Presenter 中直接依赖 `ChannelIO` 的发送动作收敛成一个薄包装：
-  · reply_current()：当前消息回复（回合输出 · 回来源）
-  · send_current()：当前 chat 直发
-  · send_images()：当前 chat 发图
+统一形式：**一个发送原语 `emit(blocks, ...)`**。
+  · emit(blocks, delivery="reply")：回合回复（默认 · 回原消息）
+  · emit(blocks, delivery="send")：当前 chat 直发（流式 / 进度）
 
 注：跨端点的「主动发送」**不走这里**，而是 agent 显式调用 `send_message` 工具。
-两者最终都经同一个出口 Router.submit(outbound)。
+两者最终都经同一个出口 Router.submit(outbound)，内容形式同为 blocks。
 """
 
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Any, Dict, List
 
-from agent_core.channel.route import RouteEnvelope, make_image_block, make_text_block
+from agent_core.channel.route import RouteEnvelope, normalize_blocks
+
 
 class TurnResponder:
     def __init__(self, *, router, platform: str, chat_id: str, message_id: str = "", namespace: str = "default") -> None:
@@ -24,36 +24,47 @@ class TurnResponder:
         self.message_id = message_id
         self.namespace = namespace
 
-    def _base_envelope(self, text: str = "") -> RouteEnvelope:
+    def _base_envelope(self) -> RouteEnvelope:
+        addr = f"{self.platform}:{self.chat_id}"
         return RouteEnvelope(
             direction="outbound",
             kind="text",
             delivery="send",
-            to=[f"{self.platform}:{self.chat_id}"],
-            target_addr=f"{self.platform}:{self.chat_id}",
-            text=text,
-            blocks=([make_text_block(text)] if text else []),
-            source_addr=f"{self.platform}:{self.chat_id}",
+            to=[addr],
+            target_addr=addr,
+            source_addr=addr,
             agent_key=self.namespace,
         )
 
-    def reply_current(self, text: str) -> bool:
-        env = self._base_envelope(text)
-        env.delivery = "reply"
-        env.reply_to = self.message_id or None
-        return bool(self.router.submit(env).get("ok"))
+    def emit(self, blocks: List[Dict[str, Any]], *, delivery: str = "reply", targets: Any = None) -> Dict[str, Any]:
+        """统一发送原语：有序 blocks → 唯一出口。
 
-    def send_current(self, text: str) -> bool:
-        return bool(self.router.submit(self._base_envelope(text)).get("ok"))
-
-    def send_images(self, images: Iterable[str]) -> None:
-        items = list(images)
-        if items:
-            env = self._base_envelope()
-            env.kind = "image"
-            env.images = items[:10]
-            env.blocks = [make_image_block(items[:10])]
-            self.router.submit(env)
+        · delivery="reply"（默认）：回原消息（reply_to = message_id）
+        · delivery="send"：直接发到会话
+        · targets 空 = 回来源会话；否则发到指定地址[]
+        返回 Router 的投递报告。
+        """
+        blks = normalize_blocks(blocks)
+        if not blks:
+            return {"ok": False, "sent": [], "skipped": [], "failed": [], "reasons": {"empty_blocks": 1}}
+        env = self._base_envelope()
+        env.blocks = blks
+        first = str(blks[0].get("type") or "")
+        env.kind = first if first in ("image", "file") else "text"
+        if first == "image":
+            env.images = [
+                str(x) for b in blks if b.get("type") == "image" for x in (b.get("images") or [])
+            ][:10]
+        env.delivery = delivery
+        if delivery == "reply" and self.message_id:
+            env.reply_to = self.message_id
+        if targets:
+            items = list(targets) if isinstance(targets, (list, tuple, set)) else [str(targets)]
+            items = [str(x) for x in items if str(x)]
+            if items:
+                env.to = items
+                env.target_addr = items[0]
+        return self.router.submit(env)
 
 
 __all__ = ["TurnResponder"]

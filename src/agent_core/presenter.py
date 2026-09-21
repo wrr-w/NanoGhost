@@ -22,6 +22,7 @@ from agent_core.channel.base import Channel
 from agent_core.config import AgentConfig
 from agent_core.channel.instance import BotInstance
 from agent_core.channel.responder import TurnResponder
+from agent_core.channel.route import make_image_block, make_markdown_block, make_text_block
 from agent_core.channel.session import SessionStore
 from agent_core.channel.message_context import ContextBuilder, MessageSource, MessageContext
 from agent_core.memory.files import read_daily_memory_block
@@ -223,7 +224,7 @@ async def run_agent_turn(
 
             if ev_type == "tool_call" and feedback_level >= 3:
                 if text_stream_content:
-                    responder.send_current(text_stream_content)
+                    responder.emit([make_text_block(text_stream_content)], delivery="send")
                     text_stream_content = ""
                 name = ((ev_data or {}).get("name") or "").strip()
                 preview = ((ev_data or {}).get("preview") or "").strip()
@@ -231,13 +232,13 @@ async def run_agent_turn(
                     emoji = _tool_emoji(name)
                     label = _tool_label(name)
                     msg = f"{emoji} {label}: {preview}" if preview else f"{emoji} {name}..."
-                    responder.send_current(msg)
+                    responder.emit([make_text_block(msg)], delivery="send")
 
             if ev_type == "tool_result" and feedback_level >= 4:
                 ok = (ev_data or {}).get("ok", True)
                 summary = ((ev_data or {}).get("summary") or "").strip()
                 if ok and summary:
-                    responder.send_current(f"  {summary[:200]}")
+                    responder.emit([make_text_block(f"  {summary[:200]}")], delivery="send")
 
             if ev_type == "step_done":
                 imgs = ((ev_data or {}).get("result") or {}).get("images")
@@ -265,7 +266,7 @@ async def run_agent_turn(
                 reply_text = (((ev_data or {}).get("reply")) or "").strip()
                 if reply_text:
                     logger.info(f"[Presenter] reply chat_id={chat_id} time={time.time()-_t_start:.0f}s")
-                    responder.reply_current(reply_text)
+                    responder.emit([make_markdown_block(reply_text)])
                 reply_text = "__DONE_SENT__"
                 done_sent = True
 
@@ -273,11 +274,11 @@ async def run_agent_turn(
         if reply_text == "__DONE_SENT__":
             reply_text = ""
         if reply_text and not done_sent:
-            responder.reply_current(reply_text)
+            responder.emit([make_markdown_block(reply_text)])
 
         # 7. 回发图片
         if out_images:
-            responder.send_images(out_images)
+            responder.emit([make_image_block(out_images)], delivery="send")
 
         return reply_text
 
