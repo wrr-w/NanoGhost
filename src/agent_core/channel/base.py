@@ -40,6 +40,16 @@ class Channel(ABC):
         """原地更新（卡片 PATCH）。默认不支持。"""
         return False
 
+    # ── 入站归一 ──────────────────────────────────────────
+
+    def parse_inbound(self, payload: Any):
+        """把「本渠道的原始入站包」翻译成通用 (MessageSource, MessageContext)。
+
+        这是渠道的固有职责（平台特有）—— 与出站 send_blocks 对称。
+        默认不支持，返回 None。
+        """
+        return None
+
     # ── 能力 ──────────────────────────────────────────────
 
     def capabilities(self) -> Set[str]:

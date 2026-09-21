@@ -7,9 +7,12 @@
   session.py           — Session 管理器
 
 飞书特有（feishu/ 下）：
-  instance.py          — SDK 长连接管理
-  turn.py              — 飞书事件 → MessageSource + MessageContext
-  ws_client.py         — 编排层
+  instance.py          — Bot 身份
+  sdk.py               — SDK 长连接管理
+  turn.py              — 飞书事件 → MessageSource + MessageContext（归一）
+  transport.py         — 接收管道（WS + 收件箱消费）
+  channel.py           — FeishuChannel：完整适配器（接收 + 归一 + 发送）
+  ws_client.py         — 兼容别名（FeishuWSClient = FeishuChannel）
 """
 
 from .api import (
@@ -23,12 +26,14 @@ from .api import (
 )
 from .sdk import FeishuSDK
 from .turn import FeishuTurnParser
-from .ws_client import FeishuWSClient
+from .transport import FeishuTransport
 from .channel import FeishuChannel
+from .ws_client import FeishuWSClient   # 兼容别名
 
 __all__ = [
-    "FeishuWSClient",
     "FeishuChannel",
+    "FeishuTransport",
+    "FeishuWSClient",
     "FeishuSDK",
     "FeishuTurnParser",
     "get_tenant_access_token",

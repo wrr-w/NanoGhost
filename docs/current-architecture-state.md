@@ -146,6 +146,8 @@ TurnResponder
 - 出站调用方已收敛为 2 个：机制（`TurnResponder.emit`）+ 工具（`send_message`）；零调用的 `notify()` / `Router.send()` / 模块级 `send()` 已删
 - `text` 块 = 纯文本（不渲染）；`markdown` 块才渲染（interactive 卡片）；回合回复默认发 `markdown` 块
 - `file` 块：本机文件上传（`/im/v1/files` 上传拿 `file_key` + `msg_type=file` 发送），任意目录、单文件 ≤30MB
+- 飞书适配器已收口为**一个对象**：`FeishuChannel`（接收 + 归一 + 发送）；接收管道在 `feishu/transport.py`（组合）；`feishu/ws_client.py` 仅保留兼容别名 `FeishuWSClient = FeishuChannel`
+- `Channel` 基类新增**入站契约** `parse_inbound(payload) -> (MessageSource, MessageContext)` —— 与出站 `send_blocks` 对称；内核从不碰飞书格式
 
 ## 当前尚未完全统一的地方
 
