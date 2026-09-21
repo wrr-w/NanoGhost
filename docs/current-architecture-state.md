@@ -8,6 +8,13 @@
 - 入站下游：`Router -> InboxEvent -> InboxHub -> ResidentConsumer`
 - 出站下游：`Router -> Channel -> ChannelIO`
 
+## 图示（归档）
+
+- **全景图**（流程 / 特性 / 字段设计）：[`arch_panorama.png`](./arch_panorama.png) ｜ 源码 [`arch_panorama.html`](./arch_panorama.html)
+- **Router 完整视图**（入站 3 入口 · 出站 2 调用方 · 唯一出口）：[`arch_router_view.png`](./arch_router_view.png) ｜ 源码 [`arch_router_view.html`](./arch_router_view.html)
+
+> 对应 commit `73d94b4`：含 `file` 块、出站统一 `emit(blocks, delivery, targets)`、`text` = 纯文本 / `markdown` = 渲染。
+
 ## 总体主干
 
 ```text
@@ -130,12 +137,15 @@ TurnResponder
 
 - 出站不再由编排层直接调用 `ChannelIO`
 - 当前回复和主动通知统一走 `Router.submit(...)`
-- 统一出站信封已支持 `delivery + blocks`，可表达有序 `text / markdown / image`
+- 统一出站信封已支持 `delivery + blocks`，可表达有序 `text / markdown / image / file`
 - `reply_to` 成为 Router 语义，而不是旧路径特例
 - 飞书 SDK 回调、定时任务、子任务完成回流都直接走 `Router.submit(inbound)`
 - 旧 `InboundDispatcher` / `OutboundEnvelope` 兼容层已移除
 - `send_message` built-in 已升级为 Agent-facing 统一发信入口，底层仍走 Router
 - 飞书 `markdown` 已不是“只声明能力”，而是实际可经 `send_message -> Router -> FeishuChannel/IO` 原生发出
+- 出站调用方已收敛为 2 个：机制（`TurnResponder.emit`）+ 工具（`send_message`）；零调用的 `notify()` / `Router.send()` / 模块级 `send()` 已删
+- `text` 块 = 纯文本（不渲染）；`markdown` 块才渲染（interactive 卡片）；回合回复默认发 `markdown` 块
+- `file` 块：本机文件上传（`/im/v1/files` 上传拿 `file_key` + `msg_type=file` 发送），任意目录、单文件 ≤30MB
 
 ## 当前尚未完全统一的地方
 

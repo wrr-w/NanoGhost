@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family:"Microsoft YaHei","PingFang SC",-apple-system,Segoe UI,sans-serif;
+    background:#eef2f7; color:#0f172a; padding:34px 44px; width:1440px; }
+  .title{ font-size:32px; font-weight:800; letter-spacing:.5px; }
+  .sub{ font-size:13.5px; color:#64748b; margin-top:7px; line-height:1.7; }
+  code{ font-family:ui-monospace,Consolas,monospace; background:#e2e8f0; color:#334155; border-radius:5px; padding:1px 6px; font-size:12px; }
+  .mono{ font-family:ui-monospace,Consolas,monospace; }
+
+  .sec{ margin-top:22px; }
+  .sec-h{ font-size:17px; font-weight:800; color:#0f172a; display:flex; align-items:center; gap:10px; margin-bottom:12px; }
+  .sec-h .n{ display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px;
+    border-radius:8px; background:#0f172a; color:#fff; font-size:14px; }
+  .sec-h .d{ font-size:11.5px; font-weight:400; color:#94a3b8; }
+
+  /* ---------- 流程 ---------- */
+  .flow{ background:#fff; border:1.6px solid #e2e8f0; border-radius:15px; padding:18px 20px; }
+  .step{ display:flex; gap:14px; align-items:stretch; }
+  .rail{ width:38px; display:flex; flex-direction:column; align-items:center; flex:0 0 38px; }
+  .dot{ width:30px; height:30px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+    font-weight:800; font-size:13px; color:#fff; flex:0 0 30px; }
+  .line{ flex:1; width:2px; background:#cbd5e1; margin:3px 0; }
+  .card{ flex:1; border:1.6px solid; border-radius:12px; padding:11px 14px; margin-bottom:4px; }
+  .card .h{ font-size:13.5px; font-weight:800; display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
+  .card .h .f{ font-size:10.5px; color:#94a3b8; font-family:ui-monospace,Consolas,monospace; font-weight:400; }
+  .card .b{ font-size:12px; margin-top:6px; line-height:1.65; color:#475569; }
+  .card .b b{ color:#0f172a; }
+  .tag{ display:inline-block; font-size:10px; font-weight:800; border-radius:20px; padding:2px 8px; margin-left:2px; }
+  .t-blue{ background:#dbeafe; color:#1d4ed8; } .t-orange{ background:#ffedd5; color:#c2410c; }
+  .t-green{ background:#dcfce7; color:#15803d; } .t-slate{ background:#e2e8f0; color:#475569; }
+  .t-purple{ background:#ede9fe; color:#6d28d9; }
+
+  .c-src{ background:#eff6ff; border-color:#bfdbfe; } .c-src .h{ color:#1d4ed8; } .c-src .dot{ background:#2563eb; }
+  .c-core{ background:#f8fafc; border-color:#cbd5e1; } .c-core .dot{ background:#0f172a; }
+  .c-ink{ background:#f0fdf4; border-color:#bbf7d0; } .c-ink .h{ color:#15803d; } .c-ink .dot{ background:#16a34a; }
+  .c-out{ background:#fff7ed; border-color:#fed7aa; } .c-out .h{ color:#c2410c; } .c-out .dot{ background:#ea580c; }
+  .c-ch{ background:#faf5ff; border-color:#e9d5ff; } .c-ch .h{ color:#7c3aed; } .c-ch .dot{ background:#7c3aed; }
+
+  .split2{ display:flex; gap:12px; margin-top:8px; }
+  .mini{ flex:1; background:#fff; border:1.4px solid #e8edf3; border-radius:10px; padding:9px 12px; }
+  .mini .mt{ font-size:12.5px; font-weight:800; }
+  .mini .md{ font-size:11px; color:#64748b; margin-top:4px; line-height:1.55; }
+  .mini.mech .mt{ color:#c2410c; } .mini.tool .mt{ color:#1d4ed8; }
+  .mini.mech{ border-color:#fed7aa; } .mini.tool{ border-color:#bfdbfe; }
+
+  /* ---------- 特性 ---------- */
+  .feats{ display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
+  .feat{ background:#fff; border:1.6px solid #e2e8f0; border-radius:12px; padding:12px 14px; }
+  .feat .ft{ font-size:12.5px; font-weight:800; color:#0f172a; display:flex; align-items:center; gap:7px; }
+  .feat .fi{ display:inline-flex; width:20px; height:20px; border-radius:6px; align-items:center; justify-content:center;
+    font-size:11px; background:#eef2ff; color:#4338ca; }
+  .feat .fd{ font-size:11px; color:#64748b; margin-top:6px; line-height:1.6; }
+  .feat .fd b{ color:#334155; }
+  .feat .fd .mono{ font-size:10.5px; color:#475569; }
+
+  /* ---------- 字段 ---------- */
+  .fields{ display:flex; gap:16px; }
+  .fcol{ flex:1; background:#fff; border:1.6px solid #e2e8f0; border-radius:13px; padding:14px 16px; }
+  .fcol-h{ font-size:13px; font-weight:800; margin-bottom:10px; color:#0f172a; display:flex; align-items:baseline; gap:8px; }
+  .fcol-h .f{ font-size:10.5px; color:#94a3b8; font-family:ui-monospace,Consolas,monospace; font-weight:400; }
+  table{ width:100%; border-collapse:collapse; }
+  td{ font-size:11.5px; padding:5px 6px; border-bottom:1px dashed #eef2f7; vertical-align:top; }
+  td.k{ font-family:ui-monospace,Consolas,monospace; font-weight:800; color:#1e40af; white-space:nowrap; }
+  td.ty{ font-family:ui-monospace,Consolas,monospace; color:#94a3b8; font-size:10.5px; white-space:nowrap; }
+  td.dc{ color:#475569; }
+  td .req{ color:#dc2626; font-weight:800; }
+  .blk{ font-family:ui-monospace,Consolas,monospace; font-size:11px; padding:5px 0; }
+  .blk b{ font-weight:800; }
+  .blk .text{ color:#475569; } .blk .md{ color:#7c3aed; } .blk .img{ color:#0891b2; } .blk .file{ color:#b91c1c; }
+  .bd{ font-size:10px; font-weight:800; border-radius:20px; padding:1px 7px; margin-left:6px; }
+  .bd.plain{ background:#e2e8f0; color:#475569; } .bd.render{ background:#ede9fe; color:#6d28d9; }
+</style>
+</head>
+<body>
+  <div class="title">NanoGhost · 全景图</div>
+  <div class="sub">
+    单 Router 收口（<code>Router.submit(RouteEnvelope)</code>）｜ 入站→收件箱→Agent→出站→通道 ｜ 内容统一为 <b>blocks</b> ｜ 唯一出口挂 4 道护栏
+  </div>
+
+  <!-- ============ 1. 流程 ============ -->
+  <div class="sec">
+    <div class="sec-h"><span class="n">1</span>流程 <span class="d">一轮（Turn）的端到端路径 · 入站 3 入口 → 出站 1 出口</span></div>
+    <div class="flow">
+
+      <div class="step">
+        <div class="rail"><div class="dot">1</div><div class="line"></div></div>
+        <div class="card c-src">
+          <div class="h">入站 · 3 个入口 <span class="tag t-blue">系统边界</span><span class="f">RouteEnvelope(direction="inbound")</span></div>
+          <div class="b"><b>飞书消息回调</b> <span class="f">ws_client.py:230</span> ｜ <b>定时任务到点</b> <span class="f">scheduler.py:461</span> ｜ <b>子 Agent 完成</b> <span class="f">subagent_pool.py:152</span></div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="rail"><div class="dot">2</div><div class="line"></div></div>
+        <div class="card c-core">
+          <div class="h">Router.submit() <span class="tag t-slate">唯一收口</span><span class="f">normalize() → route_inbound()</span></div>
+          <div class="b">字段归一 + <b>normalize_blocks()</b>；按 <b>direction</b> 分流</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="rail"><div class="dot">3</div><div class="line"></div></div>
+        <div class="card c-ink">
+          <div class="h">收件箱 → 常驻消费者 <span class="f">adapt_to_inbox() → InboxHub → ResidentConsumer</span></div>
+          <div class="b"><b>每端点 FIFO 队列</b>；端点内串行、端点间并发；按 <b>kind</b> 分派 handler</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="rail"><div class="dot">4</div><div class="line"></div></div>
+        <div class="card c-core">
+          <div class="h">Agent · ReAct 循环 <span class="f">run_agent_turn(engine/agent.py + presenter.py)</span></div>
+          <div class="b">14 个内置工具（read/write/terminal/send/ask/delegate/memory/tasks/skills/endpoints…）+ MCP（capture / ticketcore）</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="rail"><div class="dot">5</div><div class="line"></div></div>
+        <div class="card c-out">
+          <div class="h">出站 · 2 个调用方 <span class="tag t-orange">回合输出 = blocks</span><span class="f">emit(blocks, delivery, targets)</span></div>
+          <div class="split2">
+            <div class="mini mech"><div class="mt">① 机制 · TurnResponder</div><div class="md">presenter 自动调 · 每轮 done<br>targets=来源(缺省) · delivery="reply"</div></div>
+            <div class="mini tool"><div class="mt">② 工具 · send_message</div><div class="md">agent 显式调 · 可选<br>targets=[agent指定] · delivery="send"</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="rail"><div class="dot">6</div><div class="line"></div></div>
+        <div class="card c-core">
+          <div class="h">Router.submit() <span class="tag t-slate">唯一出口</span><span class="f">normalize() → route_outbound() + 护栏</span></div>
+          <div class="b"><b>resolve(to)</b> 语义目标→地址[] ｜ 逐个地址过 <b>护栏链</b> ｜ 发往别的会话时 <b>出站镜像</b></div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="rail"><div class="dot">7</div><div class="line"></div></div>
+        <div class="card c-ch">
+          <div class="h">通道投递 <span class="f">ChannelRegistry → FeishuChannel → FeishuIO → api.py</span></div>
+          <div class="b">resolve_delivery_policy → reply / send ｜ 块 → 消息：<b>text</b>=纯文本 · <b>markdown</b>=卡片 · <b>image</b> · <b>file</b> ｜ 不支持则降级</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="rail"><div class="dot" style="background:#16a34a">✓</div></div>
+        <div class="card c-ink">
+          <div class="h">用户收到 <span class="tag t-green">闭环</span></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ============ 2. 特性 ============ -->
+  <div class="sec">
+    <div class="sec-h"><span class="n">2</span>特性 <span class="d">已实装能力</span></div>
+    <div class="feats">
+      <div class="feat"><div class="ft"><span class="fi">◉</span>单入口收口</div><div class="fd"><b>Router.submit(RouteEnvelope)</b> 是唯一消息入口；入站/出站共用同一信封，靠 <span class="mono">direction</span> 分流。旧 InboundDispatcher / OutboundEnvelope 已移除。</div></div>
+      <div class="feat"><div class="ft"><span class="fi">▤</span>统一内容形态</div><div class="fd">内容一律 <b>blocks</b>（有序）：<span class="mono">text / markdown / image / file</span>。两份机制（机制 vs 工具）填的东西完全一样。</div></div>
+      <div class="feat"><div class="ft"><span class="fi">☰</span>常驻收件箱</div><div class="fd"><b>InboxHub + ResidentConsumer</b>：每端点 FIFO；端点内串行、端点间并发；按 kind 分派。忙闲只影响「何时被喂」。 </div></div>
+      <div class="feat"><div class="ft"><span class="fi">⏱</span>事件源可插</div><div class="fd"><b>Timer</b>(scheduler) · <b>SubAgentPool</b> · <b>Watcher</b>(变化才报) · <b>手动</b> —— 产出同一种事件，走同一条队列。</div></div>
+      <div class="feat"><div class="ft"><span class="fi">⧉</span>子 Agent 池</div><div class="fd">后台 / 并行（默认上限 3）/ FIFO 排队 / 完成回报父端点。一任务 : N 子 Agent。</div></div>
+      <div class="feat"><div class="ft"><span class="fi">⇄</span>通道可插拔</div><div class="fd"><b>Channel / Registry / Directory / Manager</b>：飞书是其一；端点为动态注册（收到消息即登记）。</div></div>
+      <div class="feat"><div class="ft"><span class="fi">⛨</span>出站护栏</div><div class="fd"><b>ACL</b>(按 agent) · <b>限速</b>(20/60s/端点) · <b>审计</b>(Auditor) · <b>防环</b>(hop≤4) · <b>出站镜像</b>。统一挂在这一个出口上。</div></div>
+      <div class="feat"><div class="ft"><span class="fi">↓</span>优雅降级</div><div class="fd">markdown 不支持 → text；文件通道不支持 → 文本行（路径/名），信息不丢。</div></div>
+      <div class="feat"><div class="ft"><span class="fi">⏲</span>自助定时任务</div><div class="fd"><b>schedule_task / list / cancel</b>：cron / interval / at；agent（含子 agent）自建，最长 5s 生效、无需重启。</div></div>
+      <div class="feat"><div class="ft"><span class="fi">🧠</span>记忆</div><div class="fd">写入流水线 <span class="mono">memory/pipeline.py</span>；长期记忆注入走<b>索引</b>（<span class="mono">memory_inject=index</span>），正文按需 <span class="mono">memory_read</span>。</div></div>
+      <div class="feat"><div class="ft"><span class="fi">▣</span>MCP 接入</div><div class="fd"><b>capture</b>（闲鱼采集）+ <b>ticketcore</b>（事件单）两个 http_sse 端点；工具表可 reload。</div></div>
+      <div class="feat"><div class="ft"><span class="fi">➟</span>结果出口 Sink</div><div class="fd">环形缓冲 + 可选 JSONL 落盘 + 订阅者；子 Agent 完成也落 Sink。渠道是订阅者。</div></div>
+    </div>
+  </div>
+
+  <!-- ============ 3. 字段设计 ============ -->
+  <div class="sec">
+    <div class="sec-h"><span class="n">3</span>字段设计 <span class="d">RouteEnvelope（统一信封）+ blocks</span></div>
+    <div class="fields">
+      <div class="fcol">
+        <div class="fcol-h">RouteEnvelope <span class="f">channel/route.py · 入/出站共用</span></div>
+        <table>
+          <tr><td class="k">direction</td><td class="ty">str</td><td class="dc"><span class="req">*</span>"inbound" / "outbound"（分流依据）</td></tr>
+          <tr><td class="k">kind</td><td class="ty">str</td><td class="dc"><span class="req">*</span>channel_message / text / timer / subagent_done / event…</td></tr>
+          <tr><td class="k">delivery</td><td class="ty">str</td><td class="dc">"reply"（默认）/ "send"</td></tr>
+          <tr><td class="k">source_addr</td><td class="ty">str</td><td class="dc">来源地址 <span class="mono">feishu:oc_xxx</span></td></tr>
+          <tr><td class="k">target_addr</td><td class="ty">str</td><td class="dc">目标地址（单）</td></tr>
+          <tr><td class="k">to</td><td class="ty">List[str]</td><td class="dc">收件人 0..N；空 = 回来源</td></tr>
+          <tr><td class="k">payload</td><td class="ty">Any</td><td class="dc">任意原始内容（入站事件放这）</td></tr>
+          <tr><td class="k">text</td><td class="ty">str</td><td class="dc">文本正文（简单场景）</td></tr>
+          <tr><td class="k">images</td><td class="ty">List[str]</td><td class="dc">base64 图（data URL）</td></tr>
+          <tr><td class="k">blocks</td><td class="ty">List[Dict]</td><td class="dc"><b>有序消息块</b>（推荐）</td></tr>
+          <tr><td class="k">reply_to</td><td class="ty">str?</td><td class="dc">要回复的消息 id</td></tr>
+          <tr><td class="k">reaction</td><td class="ty">Dict?</td><td class="dc">表情反应</td></tr>
+          <tr><td class="k">agent_key</td><td class="ty">str</td><td class="dc">授权 / 命名空间（默认 "default"）</td></tr>
+          <tr><td class="k">summary</td><td class="ty">str</td><td class="dc">摘要（审计 / 日志）</td></tr>
+          <tr><td class="k">route_key</td><td class="ty">str</td><td class="dc">路由键</td></tr>
+          <tr><td class="k">meta</td><td class="ty">Dict</td><td class="dc">元数据</td></tr>
+        </table>
+      </div>
+      <div class="fcol" style="max-width:430px">
+        <div class="fcol-h">blocks <span class="f">有序内容 · 唯一形态</span></div>
+        <div class="blk"><b class="text">{"type":"text", "text":"…"}</b><span class="bd plain">plain</span><br><span style="color:#64748b">&nbsp;&nbsp;纯文本 · 不渲染（msg_type=text）</span></div>
+        <div class="blk"><b class="md">{"type":"markdown", "text":"…"}</b><span class="bd render">render</span><br><span style="color:#64748b">&nbsp;&nbsp;markdown · 渲染（interactive 卡片）</span></div>
+        <div class="blk"><b class="img">{"type":"image", "images":["data:…"]}</b><br><span style="color:#64748b">&nbsp;&nbsp;图片 ≤10 · base64</span></div>
+        <div class="blk"><b class="file">{"type":"file", "files":[{"path":"C:\\…","name":"…"}]}</b><br><span style="color:#64748b">&nbsp;&nbsp;本机文件 ≤10 · 任意目录</span></div>
+        <div style="margin-top:12px; font-size:11px; color:#64748b; line-height:1.7; border-top:1px dashed #e2e8f0; padding-top:10px;">
+          <b>规范化</b>：<span class="mono">normalize_blocks()</span> 去非法/限 10；<span class="mono">blocks</span> 空时用 <span class="mono">text/images</span> 兜底。<br>
+          <b>地址</b>：<span class="mono">channel:target</span>（群 <span class="mono">oc_</span> / 人 <span class="mono">ou_</span>）。<br>
+          <b>返回</b>：<span class="mono">{ok, sent[], skipped[], failed[], reasons{}}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>
