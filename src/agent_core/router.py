@@ -179,6 +179,8 @@ class Router:
                     previews.append(txt[:40])
             elif btype == "image":
                 previews.append(f"[images:{len(list(block.get('images') or []))}]")
+            elif btype == "file":
+                previews.append(f"[files:{len(list(block.get('files') or []))}]")
         return " | ".join(previews) or "[blocks]"
 
     def _send_blocks_via_channel(
@@ -214,6 +216,22 @@ class Router:
                     return False
                 sender(target, images[:10])
                 ok = True
+            elif btype == "file":
+                files = list(block.get("files") or [])
+                if not files:
+                    continue
+                sender = getattr(ch, "send_files", None)
+                res = sender(target, files) if callable(sender) else None
+                ok = bool(res.get("sent")) if isinstance(res, dict) else bool(res)
+                if not ok:
+                    # 通道不支持 / 发送失败 → 降级为文本，避免信息丢失
+                    lines = []
+                    for f in files:
+                        if isinstance(f, dict):
+                            lines.append(f"📎 {f.get('name') or ''} ({f.get('path') or ''})")
+                        else:
+                            lines.append(f"📎 {f}")
+                    ok = bool(ch.send(target, "\n".join(lines))) if lines else False
             else:
                 return False
             if not ok:

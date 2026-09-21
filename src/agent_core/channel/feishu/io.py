@@ -65,6 +65,13 @@ class FeishuIO(ChannelIO):
     def send_images(self, chat_id: str, b64_list: List[str]) -> Dict[str, Any]:
         return api.send_images_base64_to_chat(chat_id, b64_list)
 
+    def send_file(self, chat_id: str, path: str, name: str = "") -> bool:
+        res = api.send_local_files_to_chat(chat_id, [{"path": path, "name": name}])
+        return bool(res.get("sent"))
+
+    def send_files(self, chat_id: str, files: List[Any]) -> Dict[str, Any]:
+        return api.send_local_files_to_chat(chat_id, files)
+
     def add_reaction(self, message_id: str) -> str:
         return api.add_reaction_to_message(message_id)
 

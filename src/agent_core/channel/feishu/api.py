@@ -275,6 +275,109 @@ def send_images_base64_to_chat(chat_id: str, images_base64: List[str]) -> Dict[s
     return result
 
 
+# ---- 文件上传 / 发送 ----
+
+#: 飞书「文件」消息单文件上限 30MB
+MAX_FILE_BYTES = 30 * 1024 * 1024
+
+_FILE_TYPE_MAP = {
+    "pdf": "pdf",
+    "doc": "doc", "docx": "doc",
+    "xls": "xls", "xlsx": "xls", "csv": "xls",
+    "ppt": "ppt", "pptx": "ppt",
+    "mp4": "mp4",
+    "opus": "opus",
+}
+
+
+def guess_file_type(file_name: str) -> str:
+    """按扩展名推飞书 file_type；未知一律 stream。"""
+    ext = os.path.splitext(str(file_name or ""))[1].lower().lstrip(".")
+    return _FILE_TYPE_MAP.get(ext, "stream")
+
+
+def upload_file(path: str, *, file_name: str = "", file_type: str = "") -> Optional[str]:
+    """上传本机文件到飞书，返回 file_key；失败返回 None。
+
+    POST /im/v1/files  (multipart/form-data: file_type, file_name, file)
+    """
+    name = file_name or os.path.basename(str(path or "")) or "file"
+    ftype = file_type or guess_file_type(name)
+    token = get_tenant_access_token()
+    if not token:
+        return None
+    url = "https://open.feishu.cn/open-apis/im/v1/files"
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        with open(path, "rb") as fh:
+            files = {"file": (name, fh, "application/octet-stream")}
+            data = {"file_type": ftype, "file_name": name}
+            resp = requests.post(url, headers=headers, data=data, files=files, timeout=120)
+        js = resp.json()
+        if js.get("code") == 0:
+            return (js.get("data") or {}).get("file_key")
+        logger.error(f"[Feishu] 上传文件失败 name={name} type={ftype}: {js}")
+        return None
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"[Feishu] 上传文件异常 name={name}: {e}")
+        return None
+
+
+def send_file_to_chat(chat_id: str, file_key: str, file_name: str = "") -> bool:
+    """发送已上传的文件（msg_type=file）到会话。"""
+    if not chat_id or not file_key:
+        return False
+    body = {
+        "receive_id": chat_id,
+        "msg_type": "file",
+        "content": json.dumps({"file_key": file_key}, ensure_ascii=False),
+    }
+    data = _feishu_request("POST", "/im/v1/messages?receive_id_type=chat_id", body=body)
+    if data and data.get("code") == 0:
+        return True
+    logger.error(f"[Feishu] 发送文件消息失败 name={file_name} file_key={file_key}: {data}")
+    return False
+
+
+def send_local_files_to_chat(chat_id: str, files: List[Any]) -> Dict[str, Any]:
+    """把一批本机文件上传并发送到会话。返回 {ok, sent, failed, errors}。
+
+    files 元素可为路径字符串，或 {"path": ..., "name": ...}。
+    只处理本机真实文件（存在 + ≤30MB）；**允许任意目录**。
+    """
+    result: Dict[str, Any] = {"ok": True, "sent": 0, "failed": 0, "errors": []}
+    for item in list(files or []):
+        if isinstance(item, dict):
+            path = str(item.get("path") or "").strip()
+            name = str(item.get("name") or "").strip()
+        else:
+            path = str(item or "").strip()
+            name = ""
+        if not path or not os.path.isfile(path):
+            result["failed"] += 1
+            result["errors"].append(f"not_found:{path}")
+            continue
+        size = os.path.getsize(path)
+        if size > MAX_FILE_BYTES:
+            result["failed"] += 1
+            result["errors"].append(f"too_large:{os.path.basename(path)}({size}B)")
+            continue
+        if not name:
+            name = os.path.basename(path)
+        fkey = upload_file(path, file_name=name)
+        if not fkey:
+            result["failed"] += 1
+            result["errors"].append(f"upload_failed:{name}")
+            continue
+        if send_file_to_chat(chat_id, fkey, name):
+            result["sent"] += 1
+        else:
+            result["failed"] += 1
+            result["errors"].append(f"send_failed:{name}")
+    result["ok"] = result["sent"] > 0
+    return result
+
+
 # ---- 消息反应（Reaction） ----
 
 

@@ -72,3 +72,11 @@ class ChannelIO(ABC):
     def reply_markdown(self, message_id: str, text: str) -> bool:
         """回复 markdown；默认降级为普通回复。"""
         return self.reply(message_id, text)
+
+    def send_file(self, chat_id: str, path: str, name: str = "") -> bool:
+        """发送本机文件；默认不支持。"""
+        return False
+
+    def send_files(self, chat_id: str, files: List[Any]) -> Dict[str, Any]:
+        """发送多个本机文件，返回 {ok, sent, failed, errors}；默认不支持。"""
+        return {"ok": False, "sent": 0, "failed": len(list(files or [])), "errors": ["unsupported"]}

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -19,6 +20,42 @@ def make_image_block(images: List[str]) -> Dict[str, Any]:
     return {"type": "image", "images": [str(x) for x in list(images or []) if str(x)]}
 
 
+def _norm_one_file(item: Any) -> Optional[Dict[str, str]]:
+    """把单个文件项规整为 {"path", "name"}；无效返回 None。
+
+    接受两种写法：
+        "C:\\\\dir\\\\a.pdf"
+        {"path": "C:\\\\dir\\\\a.pdf", "name": "报告.pdf"}
+    name 缺省时取路径 basename。
+    """
+    if isinstance(item, dict):
+        path = str(item.get("path") or "").strip()
+        name = str(item.get("name") or "").strip()
+    else:
+        path = str(item or "").strip()
+        name = ""
+    if not path:
+        return None
+    if not name:
+        name = os.path.basename(path.replace("\\", "/")) or "file"
+    return {"path": path, "name": name}
+
+
+def normalize_files(files: Any) -> List[Dict[str, str]]:
+    """规整文件列表（去空、最多 10 个）。仅做格式规整，不校验文件是否存在。"""
+    out: List[Dict[str, str]] = []
+    for item in list(files or []):
+        norm = _norm_one_file(item)
+        if norm:
+            out.append(norm)
+    return out[:10]
+
+
+def make_file_block(files: Any) -> Dict[str, Any]:
+    """本机文件块：[{"path": ..., "name": ...}, ...]（name 可省 = basename）。"""
+    return {"type": "file", "files": normalize_files(files)}
+
+
 def normalize_blocks(blocks: List[Dict[str, Any]] | None, *, text: str = "", images: List[str] | None = None) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for block in list(blocks or []):
@@ -33,6 +70,10 @@ def normalize_blocks(blocks: List[Dict[str, Any]] | None, *, text: str = "", ima
             items = [str(x) for x in list(block.get("images") or []) if str(x)]
             if items:
                 out.append({"type": "image", "images": items[:10]})
+        elif btype == "file":
+            files = normalize_files(block.get("files"))
+            if files:
+                out.append({"type": "file", "files": files})
     if out:
         return out
     text = str(text or "")
@@ -81,6 +122,8 @@ __all__ = [
     "make_text_block",
     "make_markdown_block",
     "make_image_block",
+    "make_file_block",
+    "normalize_files",
     "normalize_blocks",
     "resolve_reply_policy",
 ]

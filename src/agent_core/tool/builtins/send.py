@@ -27,17 +27,28 @@ SEND_MESSAGE_DEF: Dict[str, Any] = {
         },
         "blocks": {
             "type": "array",
-            "description": "有序消息块列表。第一版支持 text / markdown / image。",
+            "description": (
+                "有序消息块列表。支持 text / markdown / image / file。"
+                "file 用 files 字段，填本机文件路径（允许任意目录）。"
+            ),
             "items": {
                 "type": "object",
                 "properties": {
                     "type": {
                         "type": "string",
-                        "enum": ["text", "markdown", "image"],
+                        "enum": ["text", "markdown", "image", "file"],
                     },
                     "text": {"type": "string"},
                     "images": {
                         "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "files": {
+                        "type": "array",
+                        "description": (
+                            "本机文件路径列表（type=file 时用）。"
+                            "元素为路径字符串，或 {\"path\":\"...\",\"name\":\"...\"} 指定显示名。"
+                        ),
                         "items": {"type": "string"},
                     },
                 },

@@ -11,11 +11,14 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional, Set
 
 from agent_core.channel.base import Channel
 
 from .io import FeishuIO
+
+logger = logging.getLogger("agent_core")
 
 
 class FeishuChannel(Channel):
@@ -42,6 +45,10 @@ class FeishuChannel(Channel):
     def send_images(self, target: str, b64_list: List[str]) -> Dict[str, Any]:
         return self.io.send_images(target, b64_list)
 
+    def send_files(self, target: str, files: List[Any]) -> Dict[str, Any]:
+        """发送本机文件（允许任意目录）。返回 {ok, sent, failed, errors}。"""
+        return self.io.send_files(target, files)
+
     def add_reaction(self, message_id: str) -> str:
         return self.io.add_reaction(message_id)
 
@@ -50,16 +57,16 @@ class FeishuChannel(Channel):
 
     # ── 能力 ──
     def capabilities(self) -> Set[str]:
-        return {"text", "markdown", "mention", "image", "reaction"}
+        return {"text", "markdown", "mention", "image", "file", "reaction"}
 
     def message_capability_profile(self) -> Dict[str, Any]:
         return {
             "channel": self.name,
             "delivery": ["reply", "send"],
-            "block_types": ["text", "image", "markdown"],
+            "block_types": ["text", "image", "markdown", "file"],
             "supports_multi_block": True,
             "supports_mixed_blocks": True,
-            "supports_file": False,
+            "supports_file": True,
             "supports_card": False,
             "supports_mentions": True,
             "supports_reply": True,
@@ -69,6 +76,7 @@ class FeishuChannel(Channel):
             "limits": {
                 "max_blocks": 10,
                 "max_images_per_block": 10,
+                "max_files_per_block": 10,
             },
         }
 
@@ -104,6 +112,23 @@ class FeishuChannel(Channel):
                     continue
                 self.send_images(target, images[:10])
                 ok = True
+            elif btype == "file":
+                files = list(block.get("files") or [])
+                if not files:
+                    continue
+                res = self.send_files(target, files)
+                ok = bool(res.get("sent")) if isinstance(res, dict) else bool(res)
+                if not ok:
+                    logger.warning("[Feishu] 文件发送未成功，降级为文本: %s", res)
+                    lines = []
+                    for f in files:
+                        if isinstance(f, dict):
+                            lines.append(f"📎 {f.get('name') or ''} ({f.get('path') or ''})")
+                        else:
+                            lines.append(f"📎 {f}")
+                    if lines:
+                        self.send(target, "\n".join(lines))
+                        ok = True
             else:
                 return False
             if not ok:

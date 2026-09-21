@@ -68,6 +68,7 @@ class Channel(ABC):
             "limits": {
                 "max_blocks": 1,
                 "max_images_per_block": 0,
+                "max_files_per_block": 0,
             },
         }
 
@@ -84,6 +85,14 @@ class Channel(ABC):
         if delivery == "reply" and reply_to:
             return bool(self.reply(reply_to, text))
         return bool(self.send(target, text))
+
+    def send_files(self, target: str, files: List[Any], *, delivery: str = "send", reply_to: str | None = None) -> Any:
+        """发送本机文件（默认不支持）。
+
+        可用返回：bool，或 {"sent": int, "failed": int, "errors": [...]}。
+        子类实现后应在 message_capability_profile() 里把 supports_file 置 True。
+        """
+        return False
 
     # ── 入站（可选） ──────────────────────────────────────
 
