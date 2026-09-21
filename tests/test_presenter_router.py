@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Presenter 边界测试：当前会话直出 vs 主动路由。"""
+"""Presenter 边界测试：回合输出的三条路径（reply / send / images）。"""
 
 from __future__ import annotations
 
@@ -41,19 +41,6 @@ def test_turn_responder_send_current_creates_plain_envelope():
     assert env.to == ["feishu:oc_x"]
     assert env.text == "done"
     assert env.reply_to is None
-
-
-def test_turn_responder_notify_uses_plain_envelope():
-    router = FakeRouter()
-    responder = TurnResponder(router=router, platform="feishu", chat_id="oc_x", message_id="om_1", namespace="ns")
-
-    report = responder.notify(["feishu:ou_a"], "hello")
-
-    assert report["ok"] is True
-    env, _ = router.envelopes[0]
-    assert env.to == ["feishu:ou_a"]
-    assert env.reply_to is None
-    assert env.agent_key == "ns"
 
 
 def test_turn_responder_send_images_creates_image_envelope():

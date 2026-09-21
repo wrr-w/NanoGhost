@@ -102,11 +102,15 @@ def test_channel_admin_overview_and_snapshot():
 
 def test_channel_metrics_counts_sent():
     from agent_core.channel.admin import channel_metrics
+    from agent_core.channel.route import RouteEnvelope
     from agent_core.router import get_router
 
     get_registry().register(FakeChannel("admch"))   # 自足：确保通道在
     before = channel_metrics()["sent"]
-    get_router().send(["admch:x"], "hi", ctx={})
+    get_router().submit(RouteEnvelope(
+        direction="outbound", kind="text", delivery="send",
+        to=["admch:x"], blocks=[{"type": "text", "text": "hi"}],
+    ))
     after = channel_metrics()
     assert after["sent"] >= before + 1
 

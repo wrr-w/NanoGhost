@@ -494,29 +494,6 @@ class Router:
             logger.exception("[Router] delete_reaction failed source=%s", source_addr)
             return False
 
-    def send(
-        self,
-        to: Any,
-        text: str,
-        *,
-        ctx: Optional[Dict[str, Any]] = None,
-        agent_key: str = "default",
-        hop: int = 0,
-    ) -> Dict[str, Any]:
-        ctx = ctx or {}
-        return self.submit(
-            RouteEnvelope(
-                direction="outbound",
-                kind="text",
-                delivery="send",
-                to=self.resolve(to, ctx),
-                source_addr=(ctx.get("source_addr") or ""),
-                text=text,
-                agent_key=agent_key,
-            ),
-            hop=hop,
-        )
-
     def _audit(self, addr: str, text: str, action: str, agent_key: str) -> None:
         self.auditor.record({
             "ts": time.time(), "agent": agent_key, "addr": addr,
@@ -532,8 +509,4 @@ def get_router() -> Router:
     return ROUTER
 
 
-def send(to: Any, text: str, **kw) -> Dict[str, Any]:
-    return ROUTER.send(to, text, **kw)
-
-
-__all__ = ["Router", "Acl", "RateLimiter", "Auditor", "ROUTER", "get_router", "send", "MAX_HOP"]
+__all__ = ["Router", "Acl", "RateLimiter", "Auditor", "ROUTER", "get_router", "MAX_HOP"]

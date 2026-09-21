@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
-"""当前会话输出边界。
+"""当前会话输出边界（回合输出的唯一门面）。
 
 把 Presenter 中直接依赖 `ChannelIO` 的发送动作收敛成一个薄包装：
-  · reply_current()：当前消息回复
+  · reply_current()：当前消息回复（回合输出 · 回来源）
   · send_current()：当前 chat 直发
   · send_images()：当前 chat 发图
-  · notify()：跨端点主动发送（经 Router）
+
+注：跨端点的「主动发送」**不走这里**，而是 agent 显式调用 `send_message` 工具。
+两者最终都经同一个出口 Router.submit(outbound)。
 """
 
 from __future__ import annotations
@@ -52,21 +54,6 @@ class TurnResponder:
             env.images = items[:10]
             env.blocks = [make_image_block(items[:10])]
             self.router.submit(env)
-
-    def notify(self, to, text: str, *, namespace: str | None = None):
-        targets = list(to) if isinstance(to, (list, tuple, set)) else [str(to)]
-        env = RouteEnvelope(
-            direction="outbound",
-            kind="text",
-            delivery="send",
-            to=targets,
-            target_addr=(targets[0] if targets else ""),
-            text=text,
-            blocks=([make_text_block(text)] if text else []),
-            source_addr=f"{self.platform}:{self.chat_id}",
-            agent_key=namespace or self.namespace,
-        )
-        return self.router.submit(env)
 
 
 __all__ = ["TurnResponder"]

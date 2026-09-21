@@ -112,10 +112,20 @@ def test_hop_guard():
     assert rep["ok"] is False and "防环" in rep["error"]
 
 
-# ── send() 合并 + 审计 ───────────────────────────────────
-def test_send_default_source_and_audit():
+# ── 出站：默认回来源 + 审计 ───────────────────────────────
+def test_outbound_defaults_to_source_and_audits():
+    from agent_core.channel.route import RouteEnvelope
+
     r, ch = _mk_router()
-    rep = r.send(None, "hi", ctx={"source_addr": "fake:src"})
+    env = RouteEnvelope(
+        direction="outbound",
+        kind="text",
+        delivery="send",
+        to=[],                              # 空 → 缺省回来源
+        source_addr="fake:src",
+        blocks=[{"type": "text", "text": "hi"}],
+    )
+    rep = r.submit(env)
     assert rep["sent"] == ["fake:src"]
     assert r.auditor.recent(1)[0]["action"] == "sent"
 
