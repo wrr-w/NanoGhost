@@ -42,9 +42,22 @@ class FeishuIO(ChannelIO):
         text = self._replace_at_mentions(text)
         return api.send_text_message_to_chat(chat_id, text)
 
+    def send_markdown(self, chat_id: str, text: str) -> bool:
+        text = self._replace_at_mentions(text)
+        # interactive 卡片不支持 <at> 标签；检测到 mention 时降级为纯文本
+        if '<at user_id=' in text:
+            return api.send_text_message_to_chat(chat_id, text)
+        return api.send_markdown_message_to_chat(chat_id, text)
+
     def reply(self, message_id: str, text: str) -> bool:
         text = self._replace_at_mentions(text)
         # interactive 卡片不支持 <at> 标签，若替换后有 at 则降级为纯文本回复
+        if '<at user_id=' in text:
+            return api.reply_text_to_message(message_id, text)
+        return api.reply_to_message(message_id, text)
+
+    def reply_markdown(self, message_id: str, text: str) -> bool:
+        text = self._replace_at_mentions(text)
         if '<at user_id=' in text:
             return api.reply_text_to_message(message_id, text)
         return api.reply_to_message(message_id, text)

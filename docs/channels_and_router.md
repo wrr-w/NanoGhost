@@ -1,8 +1,9 @@
 # 多通道 · 端点 · 路由 · 通道管理 —— 架构设计 v2
 
-> 状态：**设计稿，未动代码**。
-> v2 变更：**拆开「通道」与「端点」两个概念**（§1）；**补「通道管理」**（§5）；
-> 路由改为「**模型自由路由 + 护栏**」（§4）；其余（会话/队列/消费者/子Agent/驱动）保留。
+> 状态：**部分落地，部分仍为设计**。
+> 已落地：端点地址模型、端点目录、通道注册表、ChannelManager、单 Router 主入口、RouteEnvelope、InboxHub、ResidentConsumer。
+> 部分落地：飞书通道适配、子任务完成回流、定时任务入站统一、`delivery + blocks` 出站信封、Agent-facing `send_message` tool、飞书原生 `markdown` 发送。
+> 未完全落地：更多通道扩展、统一 session target 规则、更多平台级治理接口。
 
 ---
 
@@ -110,12 +111,19 @@ Endpoint {
 Message {
   # —— 信封（传输层认识）——
   id, ts, from(addr), to(addr[] 0..N),
-  channel, kind?, summary?, reply_to?, mentions[],
-  # —— 内容（任意，agent 自己解释）——
+  delivery(reply|send), summary?, reply_to?,
+  # —— 内容（统一 blocks）——
+  blocks[
+    {type=text, text},
+    {type=markdown, text},
+    {type=image, images[]},
+    ...
+  ],
   payload
 }
 ```
 - **信封统一、内容任意**（类比邮件：SMTP 标准信封，正文随便）。
+- 当前主干已经从扁平 `text/images` 走向 `delivery + blocks`，一封信可表达有序图文。
 - **收件人 = 列表(0..N)**：1 个 = 一对一，N 个 = 一对多（fan-out）。
 
 ---

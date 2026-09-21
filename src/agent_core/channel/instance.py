@@ -11,7 +11,7 @@ import logging
 import os
 from typing import Optional
 
-from agent_core.memory.files import read_long_term_memory_block
+from agent_core.memory.files import build_injected_memory
 
 logger = logging.getLogger("agent_core")
 
@@ -37,18 +37,18 @@ class BotInstance:
         return self._base_sys_prompt
 
     def refresh_memory(self, instance_dir: str = ""):
-        """读取长期记忆并注入 sys_prompt。"""
+        """按实例配置注入长期记忆（默认只注入索引；正文走 memory_read 按需取）。"""
         if not instance_dir:
             instance_dir = os.environ.get("INSTANCE_DIR", "")
         if not instance_dir:
             return
-        memory_content = read_long_term_memory_block(instance_dir)
-        if not memory_content:
-            return
+        memory_content = build_injected_memory(instance_dir)
         marker = "## 记住的信息"
         if marker in self._base_sys_prompt:
             idx = self._base_sys_prompt.find(marker)
             self._base_sys_prompt = self._base_sys_prompt[:idx].rstrip()
+        if not memory_content:
+            return
         self._base_sys_prompt += "\n\n## 记住的信息\n\n" + memory_content + "\n\n"
 
     def load_feedback_level(self, instance_dir: str = ""):

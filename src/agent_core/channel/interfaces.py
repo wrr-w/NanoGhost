@@ -2,9 +2,13 @@
 """渠道接口定义。
 
 ChannelPort — 通道生命周期（编排器实现）
-ChannelIO  — 渠道 I/O 操作（IO 层实现）
+ChannelIO  — 渠道 I/O 原语（通道适配内部实现）
 
-agent 循环只依赖 ChannelIO，不依赖具体平台。
+当前实装边界：
+  · Agent 不直接依赖 ChannelIO
+  · 所有入站/出站统一走 Router
+  · InboxHub 是 Router 的入站下游
+  · ChannelIO 只负责平台 API 细节
 """
 
 from __future__ import annotations
@@ -32,7 +36,7 @@ class ChannelPort(ABC):
 class ChannelIO(ABC):
     """渠道 I/O 接口。
 
-    agent 循环只依赖此接口，不依赖具体平台。
+    平台 I/O 原语层，不直接暴露给 Agent 循环。
     """
 
     @abstractmethod
@@ -60,3 +64,11 @@ class ChannelIO(ABC):
     def download_image(self, message_id: str, file_key: str) -> Optional[Tuple[bytes, str]]:
         """下载图片，返回 (bytes, content_type) 或 None。"""
         ...
+
+    def send_markdown(self, chat_id: str, text: str) -> bool:
+        """发送 markdown；默认降级为普通文本。"""
+        return self.send_text(chat_id, text)
+
+    def reply_markdown(self, message_id: str, text: str) -> bool:
+        """回复 markdown；默认降级为普通回复。"""
+        return self.reply(message_id, text)

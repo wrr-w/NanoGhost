@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from abc import ABC
-from typing import Any, Awaitable, Callable, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 
 
 class Channel(ABC):
@@ -45,6 +45,45 @@ class Channel(ABC):
     def capabilities(self) -> Set[str]:
         """能力集合。常见值：text / markdown / card / mention / image / reaction / update / thread"""
         return {"text"}
+
+    def default_delivery_policy(self) -> dict:
+        return {
+            "supports_reply": True,
+            "default_allow_reply": False,
+            "default_prefer_reply": False,
+        }
+
+    def message_capability_profile(self) -> Dict[str, Any]:
+        return {
+            "channel": self.name,
+            "delivery": ["reply", "send"],
+            "block_types": ["text"],
+            "supports_multi_block": False,
+            "supports_mixed_blocks": False,
+            "supports_file": False,
+            "supports_card": False,
+            "supports_mentions": False,
+            "supports_reply": bool(self.default_delivery_policy().get("supports_reply", False)),
+            "fallbacks": {},
+            "limits": {
+                "max_blocks": 1,
+                "max_images_per_block": 0,
+            },
+        }
+
+    def send_blocks(self, target: str, blocks: List[Dict[str, Any]], *, delivery: str = "send", reply_to: str | None = None) -> bool:
+        """按顺序发送一封信；默认只支持单文本块。"""
+        if not blocks:
+            return False
+        block = blocks[0] or {}
+        if str(block.get("type") or "") not in ("text", "markdown"):
+            return False
+        text = str(block.get("text") or "")
+        if not text.strip():
+            return False
+        if delivery == "reply" and reply_to:
+            return bool(self.reply(reply_to, text))
+        return bool(self.send(target, text))
 
     # ── 入站（可选） ──────────────────────────────────────
 

@@ -23,8 +23,6 @@ import uuid
 from collections import deque
 from typing import Any, Callable, Dict, List, Optional
 
-from .inbox import submit_event
-
 logger = logging.getLogger("agent_core")
 
 #: run_fn：无参，可返回 awaitable 或普通值
@@ -148,18 +146,24 @@ class SubAgentPool:
             # ── 完成回报：往父端点收件箱投事件 ──
             if rec["target"]:
                 try:
-                    submit_event(
-                        rec["target"],
-                        kind="subagent_done",
-                        payload={
-                            "run_id": run_id,
-                            "description": rec["description"],
-                            "status": rec["status"],
-                            "result": result,
-                            "error": error,
-                        },
-                        source="subagent",
-                        summary=f"子任务 {rec['description']} {rec['status']}",
+                    from agent_core.channel.route import RouteEnvelope
+                    from agent_core.router import get_router
+
+                    get_router().submit(
+                        RouteEnvelope(
+                            direction="inbound",
+                            kind="subagent_done",
+                            target_addr=rec["target"],
+                            source_addr="subagent",
+                            payload={
+                                "run_id": run_id,
+                                "description": rec["description"],
+                                "status": rec["status"],
+                                "result": result,
+                                "error": error,
+                            },
+                            summary=f"子任务 {rec['description']} {rec['status']}",
+                        )
                     )
                 except Exception:  # noqa: BLE001
                     logger.exception("[SubAgentPool] emit completion failed %s", run_id)

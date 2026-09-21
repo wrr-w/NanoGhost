@@ -35,6 +35,7 @@ from collections.abc import AsyncIterator
 
 from .messages import build_agent_messages_with_history
 from agent_core.tool.models import ToolCall, ToolResult
+from agent_core.memory.pipeline import MemoryPipeline, MemoryTurnEvent
 from agent_core.memory.postprocess import postprocess_turn
 
 from agent_core.config import AgentConfig
@@ -150,6 +151,7 @@ class Agent:
 
         # SubAgent 管理
         self._sub_agents: Dict[str, "Agent"] = {}
+        self._memory_pipeline: Optional[MemoryPipeline] = None
 
     # ---- Hook 管理（事件驱动） ----
 
@@ -217,6 +219,42 @@ class Agent:
 
     def unregister_tool(self, name: str) -> None:
         self.tool_registry.unregister(name)
+
+    async def _handle_memory_turn(self, event: MemoryTurnEvent) -> None:
+        await postprocess_turn(
+            self,
+            event.user_message,
+            event.reply,
+            event.all_steps_out,
+            [event.step_count],
+            event.session_id,
+        )
+
+    async def _ensure_memory_pipeline(self) -> MemoryPipeline:
+        if self._memory_pipeline is None:
+            self._memory_pipeline = MemoryPipeline(handler=self._handle_memory_turn)
+            await self._memory_pipeline.start()
+        return self._memory_pipeline
+
+    async def enqueue_memory_turn(
+        self,
+        *,
+        user_message: str,
+        reply: str,
+        all_steps_out: List[Dict[str, Any]],
+        step_count: int,
+        session_id: Optional[str],
+    ) -> None:
+        pipeline = await self._ensure_memory_pipeline()
+        await pipeline.submit(
+            MemoryTurnEvent(
+                session_id=session_id,
+                user_message=user_message,
+                reply=reply,
+                all_steps_out=all_steps_out,
+                step_count=step_count,
+            )
+        )
 
     def list_tools(self) -> List[str]:
         return self.tool_registry.list_tools()
@@ -455,6 +493,7 @@ class AgentExecutor:
                     "tools_schemas": tools_schemas,
                     "messages": messages,
                 }
+                _dump_path.parent.mkdir(parents=True, exist_ok=True)
                 _dump_path.write_text(json.dumps(_dump_data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
                 _t_llm = time.time()
                 response = await asyncio.to_thread(self.agent.llm.chat, messages, temperature=0.1, tools=tools_schemas)
@@ -568,9 +607,12 @@ class AgentExecutor:
 
                 # 后处理（不阻塞用户回复）
                 asyncio.create_task(
-                    postprocess_turn(
-                        self.agent, user_message, reply, all_steps_out,
-                        step_counter, session_id,
+                    self.agent.enqueue_memory_turn(
+                        user_message=user_message,
+                        reply=reply,
+                        all_steps_out=all_steps_out,
+                        step_count=step_counter[0],
+                        session_id=session_id,
                     )
                 )
                 return

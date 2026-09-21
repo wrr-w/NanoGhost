@@ -29,11 +29,12 @@ from .channel import FeishuChannel
 from . import api
 
 # P0：通道注册表 + 端点目录
+from agent_core.channel.route import RouteEnvelope
 from agent_core.channel.registry import register_channel
 from agent_core.channel.directory import register_endpoint
 
 # P1：收件箱 + 常驻消费者
-from agent_core.runtime.inbox import InboxEvent, get_hub
+from agent_core.runtime.inbox import get_hub
 from agent_core.runtime.consumer import ResidentConsumer
 
 # P2：出站路由 + 出站镜像
@@ -226,15 +227,15 @@ class FeishuWSClient:
 
             # 入队（P1）：所有入站消息先进「每端点队列」，由常驻消费者按忙闲消费
             try:
-                self.consumer.submit(
-                    f"feishu:{chat_id}",
-                    InboxEvent(
-                        target=f"feishu:{chat_id}",
+                get_router().submit(
+                    RouteEnvelope(
+                        direction="inbound",
                         kind="channel_message",
-                        source="feishu",
-                        summary=f"{chat_type} {sender_open_id}",
+                        target_addr=f"feishu:{chat_id}",
+                        source_addr="feishu",
                         payload=event_data,
-                    ),
+                        summary=f"{chat_type} {sender_open_id}",
+                    )
                 )
             except Exception:
                 logger.exception("[Feishu WS] consumer submit failed, fallback to thread")

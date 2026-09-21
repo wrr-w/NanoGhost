@@ -38,7 +38,7 @@ if _SRC not in sys.path:
 
 from dotenv import load_dotenv
 from agent_core.config import resolve_agent_mode
-from agent_core.memory.files import read_long_term_memory_block
+from agent_core.memory.files import build_injected_memory
 from agent_core.setup_wizard import ensure_llm_configured
 from agent_core.update import auto_check_and_notify
 
@@ -413,14 +413,14 @@ def assemble_sys_prompt() -> str:
     if rules:
         parts.append(rules)
 
-    # 注入长期记忆；daily memory 改为按轮注入
+    # 注入长期记忆（默认只注入索引；正文走 memory_read 按需取）；daily memory 按轮注入
     inst_dir = _clean_env_value(os.getenv("INSTANCE_DIR"))
     if inst_dir:
-        memory_content = read_long_term_memory_block(inst_dir)
+        memory_content = build_injected_memory(inst_dir)
         if memory_content:
             parts.append(
                 f"## 记住的信息\n\n{memory_content}\n\n"
-                f"如需更新，使用 memory_write 工具。"
+                f"取正文用 memory_read，更新用 memory_write。"
             )
 
     sys_prompt = "\n\n".join(parts)

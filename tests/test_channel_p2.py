@@ -130,16 +130,23 @@ def test_send_message_tool_default_and_fanout():
     ctx = {"channel_ctx": {"chat_id": "oc_x", "platform": "feishu"}, "namespace": "ns"}
 
     # 默认 → 回来源
-    res = send_message({"text": "hello"}, ctx)
+    res = send_message({"blocks": [{"type": "text", "text": "hello"}]}, ctx)
     assert res.ok and res.data["sent"] == ["feishu:oc_x"]
     assert fc.calls == [("oc_x", "hello")]
 
-    # 空文本 → 失败
-    assert send_message({"text": "   "}, ctx).ok is False
+    # 空 blocks → 失败
+    assert send_message({"blocks": []}, ctx).ok is False
 
     # 一对多
     fc.calls.clear()
-    res3 = send_message({"to": ["feishu:ou_a", "feishu:oc_b"], "text": "hi all"}, ctx)
+    res3 = send_message(
+        {
+            "to": ["feishu:ou_a", "feishu:oc_b"],
+            "delivery": "send",
+            "blocks": [{"type": "markdown", "text": "hi all"}],
+        },
+        ctx,
+    )
     assert res3.ok and fc.calls == [("ou_a", "hi all"), ("oc_b", "hi all")]
 
 

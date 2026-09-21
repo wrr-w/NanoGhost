@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import time
@@ -17,14 +18,57 @@ from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent_core.engine.agent import Agent
+from agent_core.channel.base import Channel
 from agent_core.config import AgentConfig
 from agent_core.channel.instance import BotInstance
+from agent_core.channel.responder import TurnResponder
 from agent_core.channel.session import SessionStore
-from agent_core.channel.interfaces import ChannelIO
 from agent_core.channel.message_context import ContextBuilder, MessageSource, MessageContext
 from agent_core.memory.files import read_daily_memory_block
+from agent_core.router import get_router
 
 logger = logging.getLogger("agent_core")
+
+
+class _CompatIOChannel(Channel):
+    def __init__(self, name: str, io) -> None:
+        self.name = name
+        self.io = io
+
+    def send(self, target: str, text: str) -> bool:
+        return bool(self.io.send_text(target, text))
+
+    def reply(self, message_id: str, text: str) -> bool:
+        return bool(self.io.reply(message_id, text))
+
+    def send_images(self, target: str, b64_list: List[str]):
+        return self.io.send_images(target, b64_list)
+
+    def add_reaction(self, message_id: str) -> str:
+        return self.io.add_reaction(message_id)
+
+    def delete_reaction(self, message_id: str, reaction_id: str) -> bool:
+        return bool(self.io.delete_reaction(message_id, reaction_id))
+
+    def capabilities(self):
+        return {"text", "image", "reaction"}
+
+    def default_delivery_policy(self) -> dict:
+        return {
+            "supports_reply": True,
+            "default_allow_reply": True,
+            "default_prefer_reply": True,
+        }
+
+
+def _ensure_router_channel(router, platform: str, io) -> None:
+    if io is None:
+        return
+    reg = router._registry()
+    current = reg.get(platform)
+    if current is not None and getattr(current, "io", None) is io:
+        return
+    reg.register(_CompatIOChannel(platform, io))
 
 # ── 工具反馈 emoji & 标签映射 ──
 _TOOL_EMOJI = {
@@ -63,7 +107,7 @@ async def run_agent_turn(
     agent: Agent,
     identity: BotInstance,
     sessions: SessionStore,
-    io: ChannelIO,
+    io=None,
     context_builder: ContextBuilder,
     source: MessageSource,
     ctx: MessageContext,
@@ -79,7 +123,7 @@ async def run_agent_turn(
         agent: Agent 实例
         identity: Bot 实例信息
         sessions: Session 管理器
-        io: 渠道 I/O 实现
+        io: 兼容保留参数，当前不再用于出站
         source: 消息来源
         ctx: 消息内容
         user_text: 已经过 ContextBuilder 格式化的用户文本
@@ -133,8 +177,20 @@ async def run_agent_turn(
 
     # 4. Reaction 表示正在处理
     reaction_id = ""
+    router = get_router()
+    platform = getattr(source, "platform", "feishu")
+    _ensure_router_channel(router, platform, io)
+    source_addr = f"{platform}:{chat_id}"
     if message_id:
-        reaction_id = io.add_reaction(message_id)
+        reaction_id = router.add_reaction(source_addr, message_id)
+
+    responder = TurnResponder(
+        router=router,
+        platform=platform,
+        chat_id=chat_id,
+        message_id=message_id,
+        namespace=getattr(agent, "namespace", "default") or "default",
+    )
 
     try:
         # 5. Agent 执行
@@ -145,19 +201,29 @@ async def run_agent_turn(
         text_stream_content = ""
         done_sent = False
 
-        async for ev_type, ev_data in agent.chat_stream_events(
-            user_message=user_text,
-            session_id=session_id,
-            config=config,
-            images=images_base64 or None,
-            channel_ctx=channel_ctx or {"chat_id": chat_id, "platform": source.platform},
-        ):
+        stream_kwargs = {
+            "user_message": user_text,
+            "session_id": session_id,
+            "config": config,
+            "images": images_base64 or None,
+        }
+        try:
+            params = inspect.signature(agent.chat_stream_events).parameters
+            if "channel_ctx" in params:
+                stream_kwargs["channel_ctx"] = channel_ctx or {
+                    "chat_id": chat_id,
+                    "platform": getattr(source, "platform", "feishu"),
+                }
+        except (TypeError, ValueError):
+            pass
+
+        async for ev_type, ev_data in agent.chat_stream_events(**stream_kwargs):
             if ev_type == "text_stream" and feedback_level >= 2:
                 text_stream_content = ((ev_data or {}).get("content") or "").strip()
 
             if ev_type == "tool_call" and feedback_level >= 3:
                 if text_stream_content:
-                    io.send_text(chat_id, text_stream_content)
+                    responder.send_current(text_stream_content)
                     text_stream_content = ""
                 name = ((ev_data or {}).get("name") or "").strip()
                 preview = ((ev_data or {}).get("preview") or "").strip()
@@ -165,13 +231,13 @@ async def run_agent_turn(
                     emoji = _tool_emoji(name)
                     label = _tool_label(name)
                     msg = f"{emoji} {label}: {preview}" if preview else f"{emoji} {name}..."
-                    io.send_text(chat_id, msg)
+                    responder.send_current(msg)
 
             if ev_type == "tool_result" and feedback_level >= 4:
                 ok = (ev_data or {}).get("ok", True)
                 summary = ((ev_data or {}).get("summary") or "").strip()
                 if ok and summary:
-                    io.send_text(chat_id, f"  {summary[:200]}")
+                    responder.send_current(f"  {summary[:200]}")
 
             if ev_type == "step_done":
                 imgs = ((ev_data or {}).get("result") or {}).get("images")
@@ -199,10 +265,7 @@ async def run_agent_turn(
                 reply_text = (((ev_data or {}).get("reply")) or "").strip()
                 if reply_text:
                     logger.info(f"[Presenter] reply chat_id={chat_id} time={time.time()-_t_start:.0f}s")
-                    if message_id:
-                        io.reply(message_id, reply_text)
-                    else:
-                        io.send_text(chat_id, reply_text)
+                    responder.reply_current(reply_text)
                 reply_text = "__DONE_SENT__"
                 done_sent = True
 
@@ -210,20 +273,17 @@ async def run_agent_turn(
         if reply_text == "__DONE_SENT__":
             reply_text = ""
         if reply_text and not done_sent:
-            if message_id:
-                io.reply(message_id, reply_text)
-            else:
-                io.send_text(chat_id, reply_text)
+            responder.reply_current(reply_text)
 
         # 7. 回发图片
         if out_images:
-            io.send_images(chat_id, out_images[:10])
+            responder.send_images(out_images)
 
         return reply_text
 
     finally:
         if message_id and reaction_id:
-            io.delete_reaction(message_id, reaction_id)
+            router.delete_reaction(source_addr, message_id, reaction_id)
 
 
 def _format_ask_user_text(d: Dict[str, Any]) -> str:

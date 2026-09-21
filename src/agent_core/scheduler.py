@@ -44,7 +44,9 @@ from typing import Any, Dict, List, Optional
 
 from agent_core.channel.interfaces import ChannelIO
 from agent_core.channel.message_context import MessageSource, MessageContext
+from agent_core.channel.route import RouteEnvelope
 from agent_core.presenter import run_agent_turn
+from agent_core.router import get_router
 
 logger = logging.getLogger("agent_core")
 
@@ -449,8 +451,6 @@ async def scheduler_loop(client) -> None:
     与渠道 run_forever 并行运行；任务动态增减（最长 5s 生效）。
     实际执行由常驻消费者按端点忙闲完成（见 runtime/consumer.py）。
     """
-    from agent_core.runtime.inbox import submit_event
-
     mgr = get_task_manager()
     logger.info("[Scheduler] 启动，%d 个任务：%s", len(mgr.tasks),
                 "、".join(f"{t.name}@{t.schedule_kind()}" for t in mgr.tasks) or "（空）")
@@ -458,12 +458,15 @@ async def scheduler_loop(client) -> None:
         now = time.time()
         for t in mgr.due(now):
             try:
-                submit_event(
-                    target=f"feishu:{t.session_key}",
-                    kind="timer",
-                    payload={"task": t},
-                    source="timer",
-                    summary=f"定时任务 {t.name}",
+                get_router().submit(
+                    RouteEnvelope(
+                        direction="inbound",
+                        kind="timer",
+                        target_addr=f"feishu:{t.session_key}",
+                        source_addr="timer",
+                        payload={"task": t},
+                        summary=f"定时任务 {t.name}",
+                    )
                 )
             except Exception:
                 logger.exception("[Scheduler] submit failed task=%s", t.name)

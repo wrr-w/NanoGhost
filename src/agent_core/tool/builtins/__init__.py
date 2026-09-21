@@ -138,7 +138,8 @@ def register_builtins(registry: Any) -> None:
 
     # ── 出站（P2）：模型自由路由 ─────────────────────────
     registry.register("send_message", send_message,
-                      description="把消息发到指定端点（不填 to = 回当前会话）。"
+                      description="按统一消息信封把内容发到指定端点（不填 to = 当前会话）。"
+                                  "支持 delivery=reply|send 和 blocks(text/markdown/image)，"
                                   "to 可填多个地址（'channel:target'，如 feishu:oc_xxx）实现一对多。",
                       parameters=SEND_MESSAGE_DEF, category="channel")
 

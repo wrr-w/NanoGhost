@@ -22,6 +22,8 @@ class FakeIO:
     def __init__(self):
         self.sent = []
         self.replied = []
+        self.markdown_sent = []
+        self.markdown_replied = []
 
     def send_text(self, chat_id, text):
         self.sent.append((chat_id, text))
@@ -29,6 +31,14 @@ class FakeIO:
 
     def reply(self, message_id, text):
         self.replied.append((message_id, text))
+        return True
+
+    def send_markdown(self, chat_id, text):
+        self.markdown_sent.append((chat_id, text))
+        return True
+
+    def reply_markdown(self, message_id, text):
+        self.markdown_replied.append((message_id, text))
         return True
 
     def send_images(self, chat_id, b64_list):
@@ -77,6 +87,25 @@ def test_feishu_channel_send_reply_caps():
     caps = ch.capabilities()
     assert {"text", "mention", "image"} <= caps
     assert FeishuChannel.make_addr("oc_x") == "feishu:oc_x"
+
+
+def test_feishu_channel_send_blocks_uses_markdown_primitives():
+    io = FakeIO()
+    ch = FeishuChannel(io=io)
+
+    ok = ch.send_blocks(
+        "oc_x",
+        [
+            {"type": "markdown", "text": "## 标题"},
+            {"type": "text", "text": "补充"},
+        ],
+        delivery="reply",
+        reply_to="om_1",
+    )
+
+    assert ok is True
+    assert io.markdown_replied == [("om_1", "## 标题")]
+    assert io.sent == [("oc_x", "补充")]
 
 
 # ── 端点目录 ─────────────────────────────────────────────

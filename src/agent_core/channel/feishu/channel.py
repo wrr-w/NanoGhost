@@ -52,6 +52,64 @@ class FeishuChannel(Channel):
     def capabilities(self) -> Set[str]:
         return {"text", "markdown", "mention", "image", "reaction"}
 
+    def message_capability_profile(self) -> Dict[str, Any]:
+        return {
+            "channel": self.name,
+            "delivery": ["reply", "send"],
+            "block_types": ["text", "image", "markdown"],
+            "supports_multi_block": True,
+            "supports_mixed_blocks": True,
+            "supports_file": False,
+            "supports_card": False,
+            "supports_mentions": True,
+            "supports_reply": True,
+            "fallbacks": {
+                "markdown": "text",
+            },
+            "limits": {
+                "max_blocks": 10,
+                "max_images_per_block": 10,
+            },
+        }
+
+    def default_delivery_policy(self) -> dict:
+        return {
+            "supports_reply": True,
+            "default_allow_reply": True,
+            "default_prefer_reply": True,
+        }
+
+    def send_blocks(self, target: str, blocks: List[Dict[str, Any]], *, delivery: str = "send", reply_to: str | None = None) -> bool:
+        used_reply = False
+        for block in list(blocks or []):
+            btype = str(block.get("type") or "").strip().lower()
+            if btype in ("text", "markdown"):
+                text = str(block.get("text") or "")
+                if not text.strip():
+                    continue
+                if delivery == "reply" and reply_to and not used_reply:
+                    if btype == "markdown":
+                        ok = bool(self.io.reply_markdown(reply_to, text))
+                    else:
+                        ok = bool(self.reply(reply_to, text))
+                    used_reply = True
+                else:
+                    if btype == "markdown":
+                        ok = bool(self.io.send_markdown(target, text))
+                    else:
+                        ok = bool(self.send(target, text))
+            elif btype == "image":
+                images = [str(x) for x in list(block.get("images") or []) if str(x)]
+                if not images:
+                    continue
+                self.send_images(target, images[:10])
+                ok = True
+            else:
+                return False
+            if not ok:
+                return False
+        return True
+
     # ── 端点地址 ──
     @staticmethod
     def make_addr(chat_id: str) -> str:

@@ -13,13 +13,13 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from .directory import get_directory
-from .registry import get_registry
+from .manager import ChannelManager, get_channel_manager
 
 
-def channel_overview() -> List[Dict[str, Any]]:
-    reg = get_registry()
-    direc = get_directory()
+def channel_overview(manager: Optional[ChannelManager] = None) -> List[Dict[str, Any]]:
+    mgr = manager or get_channel_manager()
+    reg = mgr.registry
+    direc = mgr.directory
     out: List[Dict[str, Any]] = []
     for name in reg.names():
         ch = reg.get(name)
@@ -27,6 +27,7 @@ def channel_overview() -> List[Dict[str, Any]]:
         caps = sorted(ch.capabilities()) if ch is not None else []
         out.append({
             "channel": name,
+            "enabled": mgr.is_channel_enabled(name),
             "capabilities": caps,
             "endpoints": len(eps),
             "online": len([e for e in eps if e.status == "online"]),
@@ -40,8 +41,10 @@ def endpoints_snapshot(
     q: Optional[str] = None,
     status: Optional[str] = None,
     limit: int = 100,
+    manager: Optional[ChannelManager] = None,
 ) -> Dict[str, Any]:
-    eps = get_directory().list(channel=channel, kind=kind, q=q, status=status)
+    mgr = manager or get_channel_manager()
+    eps = mgr.directory.list(channel=channel, kind=kind, q=q, status=status)
     return {
         "count": len(eps),
         "endpoints": [e.to_dict() for e in eps[:limit]],

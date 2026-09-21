@@ -29,6 +29,8 @@ from .directory import (
     EndpointDirectory, DIRECTORY,
     get_directory, register_endpoint, list_endpoints,
 )
+from .manager import ChannelManager, MANAGER, get_channel_manager
+from .route import RouteEnvelope
 
 __all__ = [
     "BotInstance",
@@ -41,4 +43,6 @@ __all__ = [
     "ChannelRegistry", "REGISTRY", "get_registry", "register_channel", "get_channel",
     "Endpoint", "make_addr", "parse_addr",
     "EndpointDirectory", "DIRECTORY", "get_directory", "register_endpoint", "list_endpoints",
+    "ChannelManager", "MANAGER", "get_channel_manager",
+    "RouteEnvelope",
 ]
