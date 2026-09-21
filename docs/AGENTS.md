@@ -1,5 +1,15 @@
 # AGENTS.md — 改动日志
 
+## 2026-09-21 — 退役 lookup_user（统一交 lark-cli）+ 清理死代码
+
+- 删除 `api.get_chat_members()`（全仓 0 调用的死代码）。
+- 退役 `lookup_user` 工具 + `api.get_user_info()`：用户身份查询**统一交 lark-cli**
+  （`lark-cli contact +get-user` / `+search-user`），不再与 CLI 重复自建。
+- `register_feishu_tools(agent, mention_name_map=None)` 保留签名；`mention_name_map` 不再使用。
+- 纪律：`api.py` 冻结为「通道最小内核」，新增长尾能力一律交 lark-cli。
+
+> 注：以下 2026-06-20 条目中的 `lookup_user` / `get_user_info` 已被本次退役覆盖。
+
 ## 2026-06-20 — 用户身份查询系统
 
 ### 背景

@@ -48,31 +48,6 @@ def get_user_name(open_id: str) -> Optional[str]:
     return name
 
 
-def get_user_info(open_id: str) -> Optional[Dict[str, Any]]:
-    """获取飞书用户详细信息（姓名、职位、邮箱、部门等）。
-
-    Returns:
-        dict with keys: name, en_name, email, mobile, job_title, employee_no, department_ids
-        或 None（未找到 / API 失败）。
-    """
-    if not open_id:
-        return None
-    data = _feishu_request("GET", f"/contact/v3/users/{open_id}")
-    if data and data.get("code") == 0:
-        user = data.get("data", {}).get("user", {})
-        if user:
-            return {
-                "name": user.get("name") or "",
-                "en_name": user.get("en_name") or "",
-                "email": user.get("email") or "",
-                "mobile": user.get("mobile") or "",
-                "job_title": user.get("job_title") or "",
-                "employee_no": user.get("employee_no") or "",
-                "department_ids": user.get("department_ids") or [],
-            }
-    return None
-
-
 class FeishuTokenManager:
     """飞书 tenant_access_token 多实例缓存管理器。按 (app_id, app_secret) 键隔离。"""
 
@@ -604,31 +579,6 @@ def get_chat_name(chat_id: str) -> Optional[str]:
         info = data.get("data", {})
         return info.get("name") or None
     return None
-
-
-def get_chat_members(chat_id: str) -> List[Dict[str, str]]:
-    """获取飞书群聊成员列表。返回 [{open_id, name}, ...] 或空列表。"""
-    if not chat_id:
-        return []
-    members = []
-    page_token = ""
-    while True:
-        params = f"page_size=50"
-        if page_token:
-            params += f"&page_token={page_token}"
-        data = _feishu_request("GET", f"/im/v1/chats/{chat_id}/members?{params}")
-        if not data or data.get("code") != 0:
-            break
-        items = data.get("data", {}).get("items", [])
-        for it in items:
-            oid = (it.get("member_id") or {}).get("open_id", "") or it.get("open_id", "")
-            name = it.get("name", "") or it.get("nickname", "") or ""
-            if oid:
-                members.append({"open_id": oid, "name": name})
-        if not data.get("data", {}).get("has_more"):
-            break
-        page_token = data.get("data", {}).get("page_token", "")
-    return members
 
 
 def get_thread_messages(thread_id: str, exclude_message_id: str = "") -> List[Dict[str, Any]]:
