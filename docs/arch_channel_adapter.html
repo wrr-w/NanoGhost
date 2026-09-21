@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family:"Microsoft YaHei","PingFang SC",-apple-system,Segoe UI,sans-serif;
+    background:#eef2f7; color:#0f172a; padding:34px 44px; width:1500px; }
+  .title{ font-size:31px; font-weight:800; letter-spacing:.5px; }
+  .sub{ font-size:13.5px; color:#64748b; margin-top:7px; line-height:1.7; }
+  .sub b{ color:#2563eb; }
+  code{ font-family:ui-monospace,Consolas,monospace; background:#e2e8f0; color:#334155; border-radius:5px; padding:1px 6px; font-size:11.5px; }
+  .mono{ font-family:ui-monospace,Consolas,monospace; }
+
+  .layer{ border-radius:15px; padding:14px 18px; margin-top:14px; border:1.8px solid; }
+  .layer-h{ font-size:14.5px; font-weight:800; display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
+  .layer-h .f{ font-weight:400; font-size:11px; color:#94a3b8; }
+
+  .ext{ background:#fff1f2; border-color:#fecdd3; } .ext .layer-h{ color:#be123c; }
+  .chan{ background:#eff6ff; border-color:#93c5fd; } .chan .layer-h{ color:#1d4ed8; }
+  .core{ background:#f0fdf4; border-color:#86efac; } .core .layer-h{ color:#15803d; }
+
+  .row{ display:flex; gap:12px; margin-top:10px; flex-wrap:wrap; }
+  .pill{ background:#fff; border:1.5px solid #e2e8f0; border-radius:10px; padding:8px 13px; font-size:12px; }
+  .pill b{ font-size:12.5px; }
+  .pill .d{ font-size:10.5px; color:#94a3b8; margin-top:3px; }
+
+  /* contract vs inside */
+  .chanwrap{ display:flex; gap:14px; margin-top:10px; }
+  .contract{ flex:0 0 44%; background:#dbeafe; border:1.8px dashed #3b82f6; border-radius:12px; padding:12px 15px; }
+  .contract .ct{ font-size:12.5px; font-weight:800; color:#1d4ed8; margin-bottom:8px; }
+  .inside{ flex:1; background:#fff; border:1.6px solid #bfdbfe; border-radius:12px; padding:12px 15px; }
+  .inside .ct{ font-size:12.5px; font-weight:800; color:#475569; margin-bottom:8px; }
+  .sig{ font-family:ui-monospace,Consolas,monospace; font-size:11.5px; color:#1e40af; padding:4px 0; border-bottom:1px dashed #e8edf3; }
+  .sig:last-child{ border-bottom:none; }
+  .sig .r{ color:#94a3b8; }
+  .part{ font-size:12px; padding:6px 0; border-bottom:1px dashed #eef2f7; }
+  .part:last-child{ border-bottom:none; }
+  .part b{ font-family:ui-monospace,Consolas,monospace; color:#0f172a; font-size:11.5px; }
+  .part .d{ color:#64748b; font-size:11px; margin-top:2px; }
+
+  /* arrows */
+  .arrow{ display:flex; align-items:center; gap:12px; margin-top:12px; }
+  .arw{ flex:1; background:#fff; border:1.6px solid #e2e8f0; border-radius:11px; padding:11px 15px; }
+  .arw .t{ font-size:12.5px; font-weight:800; }
+  .arw .b{ font-size:11.5px; color:#475569; margin-top:5px; line-height:1.6; }
+  .arw.in .t{ color:#0e7490; } .arw.in{ border-color:#a5f3fc; background:#ecfeff; }
+  .arw.out .t{ color:#c2410c; } .arw.out{ border-color:#fed7aa; background:#fff7ed; }
+  .arw .mono{ font-size:11px; }
+
+  .note{ margin-top:16px; background:#0f172a; border-radius:13px; padding:14px 18px; color:#e2e8f0; }
+  .note .nh{ font-size:13.5px; font-weight:800; color:#fff; margin-bottom:7px; }
+  .note .nb{ font-size:12.5px; color:#cbd5e1; line-height:1.9; }
+  .note .nb b{ color:#fbbf24; }
+  .note .nb code{ background:#1e293b; color:#7dd3fc; }
+</style>
+</head>
+<body>
+  <div class="title">NanoGhost · 架构（渠道 = 完整适配器）</div>
+  <div class="sub">
+    分层：<b>外部世界（飞书）</b> ── <b>渠道适配器 Channel</b>（含底层）── <b>内核</b>（平台无关）。<br>
+    Channel 对上层只露「接口」，两侧都做归一：<b>入站</b>原始事件 → 通用对象；<b>出站</b>通用 blocks → 平台消息。
+  </div>
+
+  <!-- 外部世界 -->
+  <div class="layer ext">
+    <div class="layer-h">① 外部世界 <span class="f">飞书开放平台（平台私有格式）</span></div>
+    <div class="row">
+      <div class="pill"><b>WebSocket 事件</b><div class="d">im.message.receive_v1（私有 JSON）</div></div>
+      <div class="pill"><b>REST API</b><div class="d">发消息 / 发图 / 发文件 / 查名 / 下载资源</div></div>
+    </div>
+  </div>
+
+  <!-- Channel -->
+  <div class="layer chan">
+    <div class="layer-h">② 渠道适配器 · Channel <span class="f">FeishuChannel —— 唯一对象，已含底层</span></div>
+    <div class="chanwrap">
+      <!-- 对上层暴露的接口 -->
+      <div class="contract">
+        <div class="ct">对上层：能力接口（唯一接口面）</div>
+        <div class="sig">capabilities() <span class="r">→ {text, markdown, image, file, reaction, mention}</span></div>
+        <div class="sig">send_blocks(blocks, delivery, reply_to) <span class="r">出站</span></div>
+        <div class="sig">send / reply / send_files <span class="r">出站原语</span></div>
+        <div class="sig">parse_inbound(payload) <span class="r">→ (MessageSource, MessageContext) 入站</span></div>
+        <div class="sig">start / stop / run_forever <span class="r">生命周期</span></div>
+      </div>
+      <!-- 内部实现 -->
+      <div class="inside">
+        <div class="ct">内部实现（底层 · 不外露）</div>
+        <div class="part"><b>FeishuTransport</b><div class="d">接收管道：WS 长连接 + 回调去重 + 每端点收件箱消费</div></div>
+        <div class="part"><b>FeishuTurnParser</b><div class="d">归一器：飞书事件 → 通用 MessageSource/Context</div></div>
+        <div class="part"><b>FeishuIO / feishu/api.py</b><div class="d">发送原语 + 飞书 REST（token / 上传 / 下载）</div></div>
+        <div class="part"><b>会话编排</b><div class="d">handle_message / on_subagent_done / mirror_outbound</div></div>
+        <div class="part"><b>BotInstance · SessionStore</b><div class="d">身份 + 会话（chat_id → session_id）</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 内核 -->
+  <div class="layer core">
+    <div class="layer-h">③ 内核 <span class="f">平台无关 · 从不碰飞书格式</span></div>
+    <div class="row">
+      <div class="pill"><b>Router</b><div class="d">只认地址 <span class="mono">feishu:oc_xxx</span>（唯一入口/出口）</div></div>
+      <div class="pill"><b>收件箱 + 常驻消费者</b><div class="d">InboxHub → ResidentConsumer（每端点 FIFO）</div></div>
+      <div class="pill"><b>presenter / Agent</b><div class="d">只吃通用 MessageSource / MessageContext + blocks</div></div>
+    </div>
+  </div>
+
+  <!-- 双向归一 -->
+  <div class="arrow">
+    <div class="arw in">
+      <div class="t">⬆ 入站归一（渠道 → 内核）</div>
+      <div class="b">飞书原始事件 ——<span class="mono">channel.parse_inbound()</span>→ <b>MessageSource + MessageContext</b> → 内核<br>
+      （谁 / 哪个群 / @谁 / 引用 —— 全在渠道译好人话）</div>
+    </div>
+    <div class="arw out">
+      <div class="t">⬇ 出站归一（内核 → 渠道 → 外部）</div>
+      <div class="b">内核产出 <b>blocks</b> ——<span class="mono">channel.send_blocks()</span>→ 飞书消息<br>
+      （text/markdown/image/file → 对应 msg_type，含降级）</div>
+    </div>
+  </div>
+
+  <div class="note">
+    <div class="nh">一句话 · 你的理解（修正后）</div>
+    <div class="nb">
+      ✅ <b>Channel 含底层</b>（WS / API / 解析 / 会话，全在里面）—— 对外只露一个「能力接口面」。<br>
+      ✅ <b>只给上层展示自己的能力接口</b>（<code>capabilities</code> + 出站 + 入站）—— 对的。<br>
+      ⚠️ 补一点：<b>归一化是双向的</b> —— 不只是「把消息归一接进上层」，也负责「把上层的 blocks 归一成平台消息发出去」。<br>
+      → 所以 Channel = <b>双向翻译官 + 完整适配器</b>：入站 <code>原始 → 通用</code>，出站 <code>通用 → 原始</code>；内核永远只见通用。
+    </div>
+  </div>
+
+</body>
+</html>

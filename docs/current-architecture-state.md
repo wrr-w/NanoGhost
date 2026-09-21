@@ -12,6 +12,7 @@
 
 - **全景图**（流程 / 特性 / 字段设计）：[`arch_panorama.png`](./arch_panorama.png) ｜ 源码 [`arch_panorama.html`](./arch_panorama.html)
 - **Router 完整视图**（入站 3 入口 · 出站 2 调用方 · 唯一出口）：[`arch_router_view.png`](./arch_router_view.png) ｜ 源码 [`arch_router_view.html`](./arch_router_view.html)
+- **渠道 = 完整适配器**（外部世界 / Channel 接口面+内部 / 内核 · 双向归一）：[`arch_channel_adapter.png`](./arch_channel_adapter.png) ｜ 源码 [`arch_channel_adapter.html`](./arch_channel_adapter.html)
 
 > 对应 commit `73d94b4`：含 `file` 块、出站统一 `emit(blocks, delivery, targets)`、`text` = 纯文本 / `markdown` = 渲染。
 
