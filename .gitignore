@@ -34,3 +34,7 @@ err.txt
 
 # Instance data (per-machine)
 instances/*/data/
+
+# Runtime / scratch artifacts (repo root)
+/runtime/
+/_memdiag/
