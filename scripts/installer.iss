@@ -55,11 +55,16 @@ Source: "{#MyBuildDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
 ; 报 Unknown constant 而整个安装包编不出来。
 Source: "update.default.json"; DestDir: "{%USERPROFILE}\.nanoghost"; DestName: "update.json"; Flags: onlyifdoesntexist uninsneveruninstall
 
-; 本机由外部项目负责启动和管理 NanoGhost，所以这里刻意不做三件事：
+; 本机由外部项目负责启动和管理 NanoGhost，所以刻意不做两件事：
 ;   1. 不建快捷方式（[Icons] / [Tasks]）—— 手动点是废的，且会起一个管理器不知道的野进程
-;   2. 不自动启动（[Run]）—— 同上
-;   3. 不删用户数据（[UninstallDelete]）—— 见下方说明
-; 保留的只有: 程序文件 + 卸载项 + 下面那条 PATH 条目。
+;   2. 不删用户数据（[UninstallDelete]）—— 见下方说明
+; 保留的只有: 程序文件 + 卸载项 + 下面那条 PATH 条目 + [Run] 的「装完拉起」。
+;
+; [Run] 是**自升级的关键一步**：自更新走的是静默安装（/VERYSILENT），装完必须有
+; 谁把 NanoGhost 重新拉起来，否则升级完程序就没了。去掉 skipifsilent 正是为了
+; 让静默安装也会执行它；交互安装时它同时是完成页的「立即启动」勾选框。
+[Run]
+Filename: "{app}\NanoGhost.exe"; Description: "启动 NanoGhost"; Flags: nowait postinstall
 
 ; ── 部署注意事项 ──────────────────────────────────────────────
 ; 1. 用户数据在 %USERPROFILE%\.nanoghost（实例、记忆、会话库、密钥），不在安装目录内，

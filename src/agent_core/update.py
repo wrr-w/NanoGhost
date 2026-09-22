@@ -80,14 +80,16 @@ def _check_github(repo: str, asset_prefix: str = "nanoghost",
             for a in (data.get("assets") or [])
         ]
         prefix = (asset_prefix or "").strip().lower()
+        # 自 v1.2 起走「安装器即更新器」：取官方 Inno 安装包 .exe（不再用 zip）。
+        # 仍先按前缀挑（NanoGhostSetup-*.exe），挑不到再退回第一个 .exe。
         if prefix:
             for name, url in assets:
-                if url and name.endswith(".zip") and name.startswith(prefix):
+                if url and name.endswith(".exe") and name.startswith(prefix):
                     return True, tag, url
         for name, url in assets:
-            if url and name.endswith(".zip"):
+            if url and name.endswith(".exe"):
                 return True, tag, url
-        return False, "", "no .zip asset found in release"
+        return False, "", "no .exe asset found in release"
     except Exception as e:
         return False, "", str(e)
 
@@ -322,46 +324,58 @@ def apply_update(
     interactive: bool = True,
     restart: bool = True,
 ) -> tuple[bool, str]:
-    """下载安装包并启动覆盖脚本。
+    """下载**官方 Inno 安装包**并以脱离进程组的方式静默启动它。
 
-    返回 (True, "") 只代表**覆盖脚本已启动**，不代表覆盖已经成功 —— 覆盖在
-    当前进程退出之后才发生。调用方（尤其是外部管理器）应当轮询
-    update_result_path() 判断最终结果。
+    与旧实现（下 zip → 写 .bat → 等进程退出 → robocopy 覆盖）的区别：
 
-    本函数只负责启动；调用方需自行退出当前进程让出文件占用。
+      * 不再写/跑任何 .bat，不依赖外部脚本；
+      * 关旧进程、覆盖文件、装完把自己拉起来，全部由安装包自己做
+        （installer.iss 的 `CloseApplications` + `[Run]`）；
+      * Windows 上正在运行的 exe 不能被覆盖，所以替换只能发生在**本进程退出之后** ——
+        安装包是 DETACHED 起的，本进程随后退出不会把它带走。
+
+    返回 (True, "") 只代表**安装包已启动**，不代表已经装好；真正的替换在
+    本进程退出之后才发生。调用方应当随即退出。
+
+    restart=True 时由安装包的 [Run] 负责把 NanoGhost 拉回来（= 自动重启）。
     """
-    import requests
-
     if not download_url:
         return False, "未提供下载地址"
 
     try:
-        tmp_zip = os.path.join(tempfile.gettempdir(), "nanoghost_update.zip")
-
-        # 清掉上一次的结果，让调用方能靠"文件出现"判断本次是否结束
-        stale = update_result_path()
-        if os.path.isfile(stale):
-            try:
-                os.remove(stale)
-            except OSError:
-                pass
+        tmp_exe = os.path.join(
+            tempfile.gettempdir(),
+            os.path.basename(download_url.split("?")[0]) or "NanoGhostSetup.exe")
+        log_path = os.path.join(tempfile.gettempdir(), "nanoghost_install.log")
 
         if interactive:
-            print(f"  下载: {download_url}")
-        ok, err = _download(download_url, tmp_zip, interactive)
+            print(f"  下载安装包: {download_url}")
+        ok, err = _download(download_url, tmp_exe, interactive)
         if not ok:
             return False, err
 
-        app_dir = _app_dir()
-        batch = _write_update_bat(
-            tmp_zip, app_dir, "NanoGhost.exe",
-            interactive=interactive, restart=restart,
+        # 基本体检：别把半截包 / 错误页当安装包喂给系统
+        try:
+            if os.path.getsize(tmp_exe) < 1024 * 1024:
+                return False, "安装包异常：体积过小（可能是错误页或半截包）"
+            with open(tmp_exe, "rb") as f:
+                if f.read(2) != b"MZ":
+                    return False, "安装包异常：不是 Windows 可执行文件"
+        except OSError as e:
+            return False, str(e)
+
+        argv = [tmp_exe, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/SP-", "/NORESTART",
+                "/NOCLOSEAPPLICATIONS",       # 关不关自己由我们控制：本进程马上退出
+                f"/LOG={log_path}"]
+        # DETACHED_PROCESS + 新进程组：本进程随后退出，安装包必须活下来干完活
+        subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=None if interactive else subprocess.DEVNULL,
+            stderr=None if interactive else subprocess.DEVNULL,
+            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP
+                           | subprocess.DETACHED_PROCESS),
         )
-        if interactive:
-            flags = subprocess.CREATE_NEW_CONSOLE | subprocess.DETACHED_PROCESS
-        else:
-            flags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
-        subprocess.Popen(["cmd", "/c", batch], creationflags=flags)
         return True, ""
     except Exception as e:
         return False, str(e)
