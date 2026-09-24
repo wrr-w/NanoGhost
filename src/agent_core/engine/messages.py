@@ -13,7 +13,7 @@ def _estimate_message_tokens(msg: Dict[str, Any]) -> int:
     """粗略估算单条 message 的 token 数。
 
     混合文本按字符数/3估算；图片消息按固定值估算，避免 base64 长度误导。
-    reasoning_content 也计入 token。
+    reasoning_content 已不再写入历史（见构建处与 agent.py），这里的判断仅作兜底。
     """
     total = 0
 
@@ -178,11 +178,19 @@ def build_agent_messages_with_history(
                         history_msgs.append({"role": "user", "content": [{"type": "text", "text": content}]})
                 else:
                     steps_json = m.get("steps_json")
-                    reasoning_content = m.get("reasoning_content")
+                    # 不回填 reasoning_content：思考是一次性的，写回历史会让上下文每轮
+                    # 累积膨胀（实测占 ~74%），拖慢每次 LLM 调用。落库侧见 agent.py。
+                    # 兼容老数据：content 曾是整条 assistant_msg 的 JSON（内含 reasoning_content），
+                    # 读时顺手剥掉，免得历史里继续残留思考。
+                    if content.startswith("{") and "reasoning_content" in content:
+                        try:
+                            _obj = json.loads(content)
+                            if isinstance(_obj, dict) and _obj.pop("reasoning_content", None) is not None:
+                                content = json.dumps(_obj, ensure_ascii=False)
+                        except Exception:
+                            pass
                     assistant_content = [{"type": "text", "text": content}]
                     assistant_msg = {"role": "assistant", "content": assistant_content}
-                    if reasoning_content:
-                        assistant_msg["reasoning_content"] = reasoning_content
                     if steps_json:
                         try:
                             steps = json.loads(steps_json)

@@ -522,7 +522,6 @@ class AgentExecutor:
                     assistant_msg = {
                         "role": "assistant",
                         "content": response.content,
-                        "reasoning_content": response.reasoning_content,
                         "tool_calls": [
                             {
                                 "id": tc.id,
@@ -541,7 +540,6 @@ class AgentExecutor:
                             await asyncio.to_thread(
                                 self.agent.db.add_agent_message,
                                 session_id, "assistant", json.dumps(assistant_msg, ensure_ascii=False),
-                                reasoning_content=response.reasoning_content,
                                 root_id=root_id,
                             )
                         except Exception as e:
@@ -622,7 +620,6 @@ class AgentExecutor:
                 assistant_msg = {
                     "role": "assistant",
                     "content": response.content,
-                    "reasoning_content": response.reasoning_content,
                     "tool_calls": [
                         {
                             "id": tc.id,
@@ -648,7 +645,6 @@ class AgentExecutor:
                         await asyncio.to_thread(
                             self.agent.db.add_agent_message,
                             session_id, "assistant", json.dumps(assistant_msg, ensure_ascii=False),
-                            reasoning_content=response.reasoning_content,
                             root_id=root_id,
                         )
                     except Exception as e:
