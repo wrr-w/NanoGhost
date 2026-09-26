@@ -35,6 +35,10 @@ def _prune_cards_by_tail_elimination(items: List[Dict[str, Any]]) -> List[Dict[s
     threshold = med * 0.1
     if threshold <= 0:
         return items
+    # 冷启动保护：卡总量少 或 最高命中次数还很低时不做尾部淘汰，
+    # 否则刚积累的少数几张卡会被整批剪掉（空库长期为 0 的一半原因）。
+    if len(cards) < 5 or max(hits) < 2:
+        return items
     kept: List[Dict[str, Any]] = []
     removed = 0
     for c in cards:
@@ -133,7 +137,10 @@ def _flow_signature(steps: List[Dict[str, Any]]) -> Dict[str, Any]:
     for s in steps or []:
         method = (s.get("method") or "").upper()
         path = _normalize_path_for_memory(s.get("path") or "")
-        sig_steps.append(f"{method} {path}")
+        tool = (s.get("tool_name") or "").strip()
+        # tool_name 一并入签名：MCP 工具调用常常 method/path 相同（path 为空），
+        # 只靠 method+path 会把不同工具误判成同一条 flow。
+        sig_steps.append(f"{method} {path}" + (f" [{tool}]" if tool else ""))
     return {"steps": sig_steps, "length": len(sig_steps)}
 
 
@@ -147,6 +154,7 @@ def _slim_steps(steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "step": int(s.get("step") or 0),
             "method": (s.get("method") or "").upper(),
             "path": path_only,
+            "tool_name": (s.get("tool_name") or "").strip(),
             "ok": bool(s.get("ok") if s.get("ok") is not None else True),
             "status_code": int(s.get("status_code") or 0),
         })

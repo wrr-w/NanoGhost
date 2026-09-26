@@ -30,7 +30,9 @@ def update_graph_ml(
         path_b = (b.get("path") or "").strip()
         tool_b = (b.get("tool_name") or method_b).strip()
 
-        if method_a == method_b and path_a == path_b:
+        # 判重必须带上 tool_name：MCP 工具调用常常 method/path 相同（path 为空），
+        # 只比 method+path 会把「两个不同工具的相邻步」误当成同一步丢掉。
+        if method_a == method_b and path_a == path_b and tool_a == tool_b:
             continue
 
         try:

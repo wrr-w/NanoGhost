@@ -36,6 +36,26 @@ def read_daily_memory_block(instance_dir: str, day_str: str) -> str | None:
     return _read_text(daily_memory_path(instance_dir, day_str))
 
 
+def append_daily_line(instance_dir: str, line: str, day_str: str | None = None) -> Path:
+    """往当日的 memory.daily/YYYY-MM-DD.md 追加一行。
+
+    自动创建 memory.daily/ 目录与当日文件（长期/当日分层的**写入侧**；
+    此前只有读侧，目录从未被创建，这也是 daily 记忆一直为空的原因）。
+    """
+    import datetime as _dt
+
+    day = day_str or _dt.date.today().isoformat()
+    ensure_memory_layout(instance_dir)
+    path = daily_memory_path(instance_dir, day)
+    if not path.is_file():
+        path.write_text("# NanoGhost Daily Memory\n\n", encoding="utf-8")
+    text = (line or "").rstrip()
+    if text:
+        with path.open("a", encoding="utf-8") as f:
+            f.write(text + "\n")
+    return path
+
+
 # ---------------------------------------------------------------------------
 # 注入策略：默认只把 memory.md 的「章节索引」注入 system prompt，
 # 正文按需用 memory_read 工具取（见 docs/memory-system-v3-spec.md：

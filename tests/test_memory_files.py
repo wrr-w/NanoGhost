@@ -2,6 +2,7 @@ from datetime import date
 from pathlib import Path
 
 from agent_core.memory.files import (
+    append_daily_line,
     daily_memory_path,
     ensure_memory_layout,
     long_term_memory_path,
@@ -95,3 +96,34 @@ def test_memory_read_section_from_daily_target(monkeypatch, tmp_path: Path):
 
     assert result.ok
     assert result.data == {"section": "daily_log", "content": ["- 今日事项"]}
+
+
+# ---- daily 写入侧（B 线：此前 daily 目录从未被创建） -------------------------
+
+def test_append_daily_line_creates_dir_and_file(tmp_path: Path):
+    path = append_daily_line(str(tmp_path), "- 10:30 修好写管线", day_str="2026-09-23")
+    assert path == tmp_path / "memory.daily" / "2026-09-23.md"
+    assert "- 10:30 修好写管线" in path.read_text(encoding="utf-8")
+
+
+def test_append_daily_line_is_append_only(tmp_path: Path):
+    append_daily_line(str(tmp_path), "- a", day_str="2026-09-23")
+    append_daily_line(str(tmp_path), "- b", day_str="2026-09-23")
+    text = (tmp_path / "memory.daily" / "2026-09-23.md").read_text(encoding="utf-8")
+    assert text.count("- a") == 1
+    assert text.count("- b") == 1
+    assert read_daily_memory_block(str(tmp_path), "2026-09-23") is not None
+
+
+def test_append_daily_line_ignores_blank(tmp_path: Path):
+    path = append_daily_line(str(tmp_path), "   ", day_str="2026-09-24")
+    assert path.is_file()
+
+
+def test_append_daily_line_separates_days(tmp_path: Path):
+    append_daily_line(str(tmp_path), "- day1", day_str="2026-09-23")
+    append_daily_line(str(tmp_path), "- day2", day_str="2026-09-24")
+    day1 = (tmp_path / "memory.daily" / "2026-09-23.md").read_text(encoding="utf-8")
+    day2 = (tmp_path / "memory.daily" / "2026-09-24.md").read_text(encoding="utf-8")
+    assert "day2" not in day1
+    assert "day1" not in day2

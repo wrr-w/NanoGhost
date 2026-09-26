@@ -10,6 +10,7 @@ from agent_core.memory.files import (
     ensure_memory_layout,
     long_term_memory_path,
 )
+from agent_core.memory.tags import list_tags, register_tags
 
 from ..models import ToolResult
 
@@ -41,6 +42,14 @@ MEMORY_WRITE_DEF = {
             "enum": ["long_term", "daily"],
             "description": "Write to memory.md or today's daily memory file",
             "default": "long_term",
+        },
+        "tags": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "开放标签（可选，内核零预设）：由你从内容里生成，登记进「标签 × 日期」索引；"
+                "抽不出就留空，内核不替你造标签"
+            ),
         },
     },
     "required": ["action", "section"],
@@ -113,7 +122,14 @@ def memory_write(args: dict, ctx: dict) -> ToolResult:
             f.write(text)
     except Exception as e:
         return ToolResult(ok=False, error=f"Cannot write memory file: {e}")
-    return ToolResult(ok=True, data=f"{os.path.basename(path)} {action} ok")
+    # 登记开放标签（内核零预设：标签是调用方给的，抽不出就不登记）
+    registered: list = []
+    try:
+        registered = register_tags(inst_dir, args.get("tags") or [], section=section)
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"[memory_write] register_tags error: {e}")
+    suffix = f" | tags={','.join(registered)}" if registered else ""
+    return ToolResult(ok=True, data=f"{os.path.basename(path)} {action} ok{suffix}")
 
 
 MEMORY_EXPLORE_DEF = {
@@ -198,7 +214,7 @@ MEMORY_READ_DEF = {
     "properties": {
         "action": {
             "type": "string",
-            "enum": ["index", "section", "detail"],
+            "enum": ["index", "section", "detail", "tags"],
             "description": "index: list sections / section: read one section / detail: search within section",
         },
         "section": {
@@ -227,6 +243,13 @@ def memory_read(args: dict, ctx: dict) -> ToolResult:
     inst_dir = os.getenv("INSTANCE_DIR", "")
     if not inst_dir:
         return ToolResult(ok=False, error="INSTANCE_DIR not set")
+    if action == "tags":
+        # 开放标签索引（标签 × 日期），与 md 文件无关，先返回
+        try:
+            rows = list_tags(inst_dir)
+        except Exception as e:  # noqa: BLE001
+            return ToolResult(ok=False, error=f"Cannot read tag index: {e}")
+        return ToolResult(ok=True, data={"tags": rows, "count": len(rows)})
     try:
         path_md = _resolve_memory_target_path(inst_dir, target)
     except ValueError as e:

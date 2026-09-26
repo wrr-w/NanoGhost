@@ -36,7 +36,7 @@ from collections.abc import AsyncIterator
 from .messages import build_agent_messages_with_history
 from agent_core.tool.models import ToolCall, ToolResult
 from agent_core.memory.pipeline import MemoryPipeline, MemoryTurnEvent
-from agent_core.memory.postprocess import postprocess_turn
+from agent_core.memory.postprocess import postprocess_turn_sync
 
 from agent_core.config import AgentConfig
 from agent_core.hooks import AgentHooks, HookBus
@@ -220,8 +220,9 @@ class Agent:
     def unregister_tool(self, name: str) -> None:
         self.tool_registry.unregister(name)
 
-    async def _handle_memory_turn(self, event: MemoryTurnEvent) -> None:
-        await postprocess_turn(
+    def _handle_memory_turn(self, event: MemoryTurnEvent) -> None:
+        # 由 MemoryPipeline 的常驻线程调用（同步实现，不再需要 await）
+        postprocess_turn_sync(
             self,
             event.user_message,
             event.reply,
@@ -230,13 +231,13 @@ class Agent:
             event.session_id,
         )
 
-    async def _ensure_memory_pipeline(self) -> MemoryPipeline:
+    def _ensure_memory_pipeline(self) -> MemoryPipeline:
         if self._memory_pipeline is None:
             self._memory_pipeline = MemoryPipeline(handler=self._handle_memory_turn)
-            await self._memory_pipeline.start()
+            self._memory_pipeline.start()
         return self._memory_pipeline
 
-    async def enqueue_memory_turn(
+    def enqueue_memory_turn(
         self,
         *,
         user_message: str,
@@ -245,8 +246,14 @@ class Agent:
         step_count: int,
         session_id: Optional[str],
     ) -> None:
-        pipeline = await self._ensure_memory_pipeline()
-        await pipeline.submit(
+        """投递回合后处理事件（同步、非阻塞）。
+
+        原先这里是 `asyncio.create_task(...)` 的 fire-and-forget 任务，会随通道
+        worker 的事件循环一起被回收 —— 这就是后处理从未执行、Card/Graph 长期空库的
+        根因。现在改为同步投递到常驻线程队列，绕开事件循环生命周期。
+        """
+        pipeline = self._ensure_memory_pipeline()
+        pipeline.submit(
             MemoryTurnEvent(
                 session_id=session_id,
                 user_message=user_message,
@@ -603,15 +610,14 @@ class AgentExecutor:
                 }
                 yield ("done", payload)
 
-                # 后处理（不阻塞用户回复）
-                asyncio.create_task(
-                    self.agent.enqueue_memory_turn(
-                        user_message=user_message,
-                        reply=reply,
-                        all_steps_out=all_steps_out,
-                        step_count=step_counter[0],
-                        session_id=session_id,
-                    )
+                # 后处理（不阻塞用户回复）：同步投递到常驻线程队列。
+                # 不要用 asyncio.create_task —— 它会随本回合的事件循环一起被回收。
+                self.agent.enqueue_memory_turn(
+                    user_message=user_message,
+                    reply=reply,
+                    all_steps_out=all_steps_out,
+                    step_count=step_counter[0],
+                    session_id=session_id,
                 )
                 return
 
